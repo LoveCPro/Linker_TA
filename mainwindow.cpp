@@ -1,12 +1,16 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
 #include "serialprotocol.h"
+#include "log.h"
 #include <QSerialPortInfo>
 #include <QMessageBox>
 #include <QDateTime>
 #include <QTextCursor>
 #include <QtCharts/QChartView>
 #include <QIcon>
+#include <QHeaderView>
+#include <QAbstractItemView>
+#include <QGridLayout>
 
 // 构造函数
 MainWindow::MainWindow(QWidget *parent)
@@ -15,7 +19,9 @@ MainWindow::MainWindow(QWidget *parent)
     , serialPort(new QSerialPort(this))
     , continuousTimer(new QTimer(this))
     , chartUpdateTimer(new QTimer(this))
+    , armUpdateTimer(new QTimer(this))
     , versionTimeoutTimer(new QTimer(this))
+    , versionRetryTimer(new QTimer(this))
     , calibrateTimeoutTimer(new QTimer(this))
     , leftArmChart(new QChart())
     , rightArmChart(new QChart())
@@ -36,6 +42,8 @@ MainWindow::MainWindow(QWidget *parent)
 
     // 初始化连接
     initConnections();
+
+    setOperationButtonsEnabled(false);
 
     // 刷新串口列表
     onPortsRefreshed();
@@ -71,14 +79,68 @@ void MainWindow::initUI()
     ui->flowControlComboBox->addItems({"None", "Hardware", "Software"});
     ui->flowControlComboBox->setCurrentIndex(0);
 
-    // 初始化发送间隔
-    ui->sendIntervalSpinBox->setRange(1, 10000);
-    ui->sendIntervalSpinBox->setValue(15);
-
     // 初始化ID选择
     for (int i = 0; i < 14; ++i) {
         ui->idComboBox->addItem(QString::number(i));
     }
+
+    if (ui->armStopButton) {
+        ui->armStopButton->hide();
+    }
+
+    ui->portComboBox->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    ui->portComboBox->setMinimumContentsLength(15);
+    ui->portComboBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+
+    ui->baudRateComboBox->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    ui->baudRateComboBox->setMinimumContentsLength(8);
+    ui->baudRateComboBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+
+    if (auto grid = qobject_cast<QGridLayout*>(ui->groupBox->layout())) {
+        grid->setColumnStretch(0, 0);
+        grid->setColumnStretch(1, 1);
+        grid->setColumnStretch(2, 0);
+        grid->setColumnStretch(3, 0);
+        grid->setHorizontalSpacing(8);
+    }
+
+    ui->leftArmTable->setColumnCount(2);
+    ui->leftArmTable->setRowCount(7);
+    QStringList leftHeaders;
+    leftHeaders << "关节" << "角度(°)";
+    ui->leftArmTable->setHorizontalHeaderLabels(leftHeaders);
+    ui->leftArmTable->verticalHeader()->setVisible(false);
+    ui->leftArmTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    ui->leftArmTable->setSelectionMode(QAbstractItemView::NoSelection);
+    ui->leftArmTable->horizontalHeader()->setStretchLastSection(true);
+
+    ui->rightArmTable->setColumnCount(2);
+    ui->rightArmTable->setRowCount(7);
+    QStringList rightHeaders;
+    rightHeaders << "关节" << "角度(°)";
+    ui->rightArmTable->setHorizontalHeaderLabels(rightHeaders);
+    ui->rightArmTable->verticalHeader()->setVisible(false);
+    ui->rightArmTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    ui->rightArmTable->setSelectionMode(QAbstractItemView::NoSelection);
+    ui->rightArmTable->horizontalHeader()->setStretchLastSection(true);
+
+    ui->leftArmTable->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    ui->leftArmTable->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    int leftRowHeight = ui->leftArmTable->verticalHeader()->defaultSectionSize();
+    int leftHeight = ui->leftArmTable->horizontalHeader()->height()
+                     + ui->leftArmTable->frameWidth() * 2
+                     + leftRowHeight * ui->leftArmTable->rowCount();
+    ui->leftArmTable->setMinimumHeight(leftHeight);
+    ui->leftArmTable->setMaximumHeight(leftHeight);
+
+    ui->rightArmTable->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    ui->rightArmTable->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    int rightRowHeight = ui->rightArmTable->verticalHeader()->defaultSectionSize();
+    int rightHeight = ui->rightArmTable->horizontalHeader()->height()
+                      + ui->rightArmTable->frameWidth() * 2
+                      + rightRowHeight * ui->rightArmTable->rowCount();
+    ui->rightArmTable->setMinimumHeight(rightHeight);
+    ui->rightArmTable->setMaximumHeight(rightHeight);
 }
 
 void MainWindow::initCharts()
@@ -156,15 +218,8 @@ void MainWindow::initConnections()
     connect(serialPort, &QSerialPort::readyRead, this, &MainWindow::onSerialDataReceived);
     connect(serialPort, &QSerialPort::errorOccurred, this, &MainWindow::onSerialErrorOccurred);
 
-    // 左臂控制
-    connect(ui->leftSingleButton, &QPushButton::clicked, this, &MainWindow::onLeftSingleGetClicked);
-    connect(ui->leftContinuousButton, &QPushButton::clicked, this, &MainWindow::onLeftContinuousGetClicked);
-    connect(ui->leftStopButton, &QPushButton::clicked, this, &MainWindow::onLeftStopClicked);
-
-    // 右臂控制
-    connect(ui->rightSingleButton, &QPushButton::clicked, this, &MainWindow::onRightSingleGetClicked);
-    connect(ui->rightContinuousButton, &QPushButton::clicked, this, &MainWindow::onRightContinuousGetClicked);
-    connect(ui->rightStopButton, &QPushButton::clicked, this, &MainWindow::onRightStopClicked);
+    // 臂控制
+    connect(ui->armGetButton, &QPushButton::clicked, this, &MainWindow::onArmGetClicked);
 
     // 其他命令
     connect(ui->calibrateButton, &QPushButton::clicked, this, &MainWindow::onCalibrateClicked);
@@ -178,11 +233,22 @@ void MainWindow::initConnections()
     connect(continuousTimer, &QTimer::timeout, this, &MainWindow::onContinuousTimer);
     connect(chartUpdateTimer, &QTimer::timeout, this, &MainWindow::updateCharts);
     chartUpdateTimer->start(1000); // 每秒更新一次图表
+    connect(armUpdateTimer, &QTimer::timeout, this, &MainWindow::updateUIWithArmData);
 
     versionTimeoutTimer->setSingleShot(true);
     connect(versionTimeoutTimer, &QTimer::timeout, [this]() {
         logMessage("获取版本失败：超时，未收到版本响应");
         showStatusMessage("获取版本失败：版本读取超时");
+    });
+
+    versionRetryTimer->setSingleShot(true);
+    connect(versionRetryTimer, &QTimer::timeout, [this]() {
+        if (versionReceived) return;
+        if (versionRequestCount >= 3) return;
+        sendVersionRequest();
+        if (versionRequestCount < 3) {
+            versionRetryTimer->start(1000);
+        }
     });
 
     calibrateTimeoutTimer->setSingleShot(true);
@@ -202,6 +268,10 @@ void MainWindow::onPortsRefreshed()
         ui->portComboBox->addItem(portInfo, port.portName());
     }
 
+    for (int i = 0; i < ui->portComboBox->count(); ++i) {
+        ui->portComboBox->setItemData(i, ui->portComboBox->itemText(i), Qt::ToolTipRole);
+    }
+
     if (ports.isEmpty()) {
         ui->portComboBox->addItem("无可用串口");
         ui->connectButton->setEnabled(false);
@@ -209,10 +279,9 @@ void MainWindow::onPortsRefreshed()
         ui->connectButton->setEnabled(true);
     }
     
-    // 初始化连接按钮状态
     if (!serialPort->isOpen()) {
         ui->connectButton->setText("连接");
-        ui->connectButton->setStyleSheet("color: red;");
+        ui->connectButton->setStyleSheet("background-color: red; color: white;");
     }
 }
 
@@ -279,7 +348,7 @@ void MainWindow::openSerialPort()
 
     if (serialPort->open(QIODevice::ReadWrite)) {
         ui->connectButton->setText("断开");
-        ui->connectButton->setStyleSheet("color: green;");
+        ui->connectButton->setStyleSheet("background-color: green; color: white;");
         ui->portComboBox->setEnabled(false);
         ui->baudRateComboBox->setEnabled(false);
         ui->dataBitsComboBox->setEnabled(false);
@@ -290,12 +359,16 @@ void MainWindow::openSerialPort()
 
         showStatusMessage("串口已连接: " + portName);
         logMessage("串口已连接: " + portName);
-        
-        // 自动读取版本号
-        QByteArray cmd = SerialProtocol::buildGetVersionCommand();
-        writeData(cmd);
-        logMessage("已发送：自动读取版本号");
+        setOperationButtonsEnabled(true);
+        ui->armGetButton->setText("获取");
+        ui->armGetButton->setStyleSheet("background-color: red; color: white;");
+        versionRequestCount = 0;
+        versionReceived = false;
+        sendVersionRequest();
         startVersionTimeout();
+        if (versionRequestCount < 3) {
+            versionRetryTimer->start(1000);
+        }
     } else {
         QMessageBox::critical(this, "错误", "无法打开串口: " + serialPort->errorString());
     }
@@ -304,10 +377,16 @@ void MainWindow::openSerialPort()
 void MainWindow::closeSerialPort()
 {
     if (serialPort->isOpen()) {
+        if (streamEnabled) {
+            QByteArray cmd = SerialProtocol::buildDisableDataStreamCommand();
+            writeData(cmd);
+            logMessage("已发送：禁用遥操臂数据推送（串口断开前）");
+        }
+
         serialPort->close();
 
         ui->connectButton->setText("连接");
-        ui->connectButton->setStyleSheet("color: red;");
+        ui->connectButton->setStyleSheet("background-color: red; color: white;");
         ui->portComboBox->setEnabled(true);
         ui->baudRateComboBox->setEnabled(true);
         ui->dataBitsComboBox->setEnabled(true);
@@ -317,8 +396,19 @@ void MainWindow::closeSerialPort()
         ui->refreshPortsButton->setEnabled(true);
 
         continuousTimer->stop();
+        armUpdateTimer->stop();
         stopVersionTimeout();
         stopCalibrateTimeout();
+        if (versionRetryTimer->isActive()) {
+            versionRetryTimer->stop();
+        }
+        versionRequestCount = 0;
+        versionReceived = false;
+        acceptingStream = false;
+        streamEnabled = false;
+        ui->armGetButton->setText("获取");
+        ui->armGetButton->setStyleSheet("background-color: red; color: white;");
+        setOperationButtonsEnabled(false);
         
         // 重置版本显示
         ui->versionLabel->setText("版本: 未知");
@@ -353,18 +443,19 @@ void MainWindow::handleProtocolFrame(const SerialProtocol::Frame &frame)
 {
     // 协议说明：推送数据为 56字节 float(小端)，无响应；响应帧数据区第1字节为结果码
     if (frame.dataLength == 56) {
-        if (!acceptingStream && !singleShotPending) return;
+        if (!acceptingStream) return;
 
         QVector<float> armData;
         if (SerialProtocol::parseArmData(frame.data, armData) && armData.size() == 14) {
+            QByteArray raw;
+            raw.append(SerialProtocol::FRAME_HEADER);
+            raw.append(static_cast<char>(frame.cmdType));
+            raw.append(static_cast<char>(frame.dataLength));
+            raw.append(frame.data);
+            raw.append(static_cast<char>(frame.checksum));
+            raw.append(SerialProtocol::FRAME_TAIL);
+            LOG_FRAME_D("Arm push frame:" << raw.toHex(' ').toUpper());
             processArmData(armData);
-            updateUIWithArmData();
-
-            if (singleShotPending) {
-                singleShotPending = false;
-                acceptingStream = false;
-                logMessage("单次获取完成（收到一帧推送数据）");
-            }
         } else {
             logMessage("推送数据解析失败（非56字节float序列）");
         }
@@ -401,13 +492,28 @@ void MainWindow::handleProtocolFrame(const SerialProtocol::Frame &frame)
         stopCalibrateTimeout();
         okFailText("零点标定成功", "零点标定失败");
         break;
+    case SerialProtocol::CMD_TORQUE_CONTROL:
+        okFailText("扭矩设置成功", "扭矩设置失败");
+        break;
     case SerialProtocol::CMD_ENABLE_DATA_STREAM:
-        if (result == SerialProtocol::RESULT_SUCCESS) streamEnabled = true;
+        if (result == SerialProtocol::RESULT_SUCCESS) {
+            streamEnabled = true;
+        }
         okFailText("启用遥操臂数据推送成功", "启用遥操臂数据推送失败");
+        break;
+    case SerialProtocol::CMD_DISABLE_DATA_STREAM:
+        if (result == SerialProtocol::RESULT_SUCCESS) {
+            streamEnabled = false;
+        }
+        okFailText("禁用遥操臂数据推送成功", "禁用遥操臂数据推送失败");
         break;
     case SerialProtocol::CMD_GET_VERSION:
         if (result == SerialProtocol::RESULT_SUCCESS && payload.size() >= 4) {
             stopVersionTimeout();
+            if (versionRetryTimer->isActive()) {
+                versionRetryTimer->stop();
+            }
+            versionReceived = true;
             QByteArray versionBytes = payload.left(4);
             QString versionHex = versionBytes.toHex().toUpper();
             QString versionStr = QString("版本: V%1").arg(versionHex);
@@ -423,6 +529,14 @@ void MainWindow::handleProtocolFrame(const SerialProtocol::Frame &frame)
         if (payload.size() == 56) {
             QVector<float> armData;
             if (SerialProtocol::parseArmData(payload, armData) && armData.size() == 14) {
+                QByteArray raw;
+                raw.append(SerialProtocol::FRAME_HEADER);
+                raw.append(static_cast<char>(frame.cmdType));
+                raw.append(static_cast<char>(frame.dataLength));
+                raw.append(frame.data);
+                raw.append(static_cast<char>(frame.checksum));
+                raw.append(SerialProtocol::FRAME_TAIL);
+                LOG_FRAME_D("Arm resp frame:" << raw.toHex(' ').toUpper());
                 processArmData(armData);
                 updateUIWithArmData();
             }
@@ -476,58 +590,31 @@ void MainWindow::writeData(const QByteArray &data)
     }
 }
 
-void MainWindow::onLeftSingleGetClicked()
+void MainWindow::onArmGetClicked()
 {
-    ensureStreamEnabled();
-    singleShotPending = true;
-    acceptingStream = true;
-    logMessage("左臂：单次获取（等待一帧推送数据，收到后自动停止更新）");
-}
+    if (!serialPort->isOpen()) {
+        QMessageBox::warning(this, "警告", "串口未连接");
+        return;
+    }
 
-void MainWindow::onLeftContinuousGetClicked()
-{
-    ensureStreamEnabled();
-    acceptingStream = true;
-    singleShotPending = false;
-
-    const int interval = ui->sendIntervalSpinBox->value();
-    // 协议为“启用后设备主动推送”，默认不轮询发送；如需轮询，取消下面注释
-    // continuousTimer->start(interval);
-    Q_UNUSED(interval);
-
-    logMessage("左臂：开始持续获取（接收推送）");
-    showStatusMessage("持续获取：已开启（接收推送）");
-}
-
-void MainWindow::onLeftStopClicked()
-{
-    continuousTimer->stop();
-    acceptingStream = false;
-    singleShotPending = false;
-    logMessage("停止获取（不再更新界面，仍保持串口接收）");
-    showStatusMessage("已停止获取");
-}
-
-void MainWindow::onRightSingleGetClicked()
-{
-    ensureStreamEnabled();
-    singleShotPending = true;
-    acceptingStream = true;
-    logMessage("右臂：单次获取（等待一帧推送数据，收到后自动停止更新）");
-}
-
-void MainWindow::onRightContinuousGetClicked()
-{
-    ensureStreamEnabled();
-    acceptingStream = true;
-    singleShotPending = false;
-    logMessage("右臂：开始持续获取（接收推送）");
-    showStatusMessage("持续获取：已开启（接收推送）");
-}
-
-void MainWindow::onRightStopClicked()
-{
-    onLeftStopClicked();
+    if (!streamEnabled) {
+        ensureStreamEnabled();
+        acceptingStream = true;
+        armUpdateTimer->start(500);
+        ui->armGetButton->setText("停止");
+        ui->armGetButton->setStyleSheet("background-color: green; color: white;");
+        logMessage("臂数据：开始获取（接收推送数据）");
+        showStatusMessage("臂数据获取已开启（接收推送数据）");
+    } else {
+        QByteArray cmd = SerialProtocol::buildDisableDataStreamCommand();
+        writeData(cmd);
+        armUpdateTimer->stop();
+        acceptingStream = false;
+        ui->armGetButton->setText("获取");
+        ui->armGetButton->setStyleSheet("background-color: #F44336; color: white;");
+        logMessage("臂数据：已停止获取（不再更新界面，仍保持串口接收）");
+        showStatusMessage("臂数据获取已停止");
+    }
 }
 
 void MainWindow::onContinuousTimer()
@@ -540,6 +627,7 @@ void MainWindow::onCalibrateClicked()
 {
     QByteArray cmd = SerialProtocol::buildCalibrateCommand();
     writeData(cmd);
+    LOG_SERIAL_D("Calibrate command:" << cmd.toHex(' ').toUpper());
     startCalibrateTimeout();
 }
 
@@ -560,6 +648,7 @@ void MainWindow::onSendCustomMessageClicked()
 
     QByteArray data = QByteArray::fromHex(hexString.toLatin1());
     writeData(data);
+    LOG_SERIAL_D("Custom command:" << data.toHex(' ').toUpper());
 }
 
 void MainWindow::onTorqueSetClicked()
@@ -570,12 +659,13 @@ void MainWindow::onTorqueSetClicked()
     float torque = ui->torqueSpinBox->value();
     float position = ui->positionSpinBox->value();
 
-    // 构建扭矩控制命令（协议未更新：先按占位格式打包，后续按文档替换）
+    // 构建扭矩控制命令
     QByteArray cmd = SerialProtocol::buildTorqueControlCommand(id, speed, acceleration, torque, position);
     writeData(cmd);
 
-    logMessage(QString("扭矩设置（占位协议）: ID=%1, 速度=%2, 加速度=%3, 扭矩=%4, 位置=%5")
-                   .arg(id).arg(speed).arg(acceleration).arg(torque).arg(position));
+    logMessage(QString("扭矩设置: ID=%1, 位置=%2, 速度=%3, 加速度=%4, 扭矩=%5")
+                   .arg(id).arg(position).arg(speed).arg(acceleration).arg(torque));
+    LOG_SERIAL_D("Torque command:" << cmd.toHex(' ').toUpper());
 }
 
 void MainWindow::processArmData(const QVector<float> &armData)
@@ -611,21 +701,56 @@ void MainWindow::processArmData(const QVector<float> &armData)
 
 void MainWindow::updateUIWithArmData()
 {
+    if (!acceptingStream) return;
+
     if (leftArmData.isEmpty() || rightArmData.isEmpty()) return;
 
-    // 更新左臂数据显示
-    QString leftText = "左臂关节角度:\n";
-    for (int i = 0; i < leftArmData.size(); ++i) {
-        leftText += QString("关节%1: %2°\n").arg(i).arg(leftArmData[i], 0, 'f', 2);
-    }
-    ui->leftArmTextEdit->setText(leftText);
+    QStringList leftNames = {
+        "旋转",
+        "右摆",
+        "右旋转",
+        "上摆",
+        "右旋转",
+        "上摆",
+        "右摆"
+    };
 
-    // 更新右臂数据显示
-    QString rightText = "右臂关节角度:\n";
-    for (int i = 0; i < rightArmData.size(); ++i) {
-        rightText += QString("关节%1: %2°\n").arg(i).arg(rightArmData[i], 0, 'f', 2);
+    int leftCount = qMin(leftArmData.size(), leftNames.size());
+    for (int i = 0; i < leftCount; ++i) {
+        QString label = QString("ID%1(%2)").arg(i).arg(leftNames[i]);
+        if (!ui->leftArmTable->item(i, 0)) {
+            ui->leftArmTable->setItem(i, 0, new QTableWidgetItem());
+        }
+        if (!ui->leftArmTable->item(i, 1)) {
+            ui->leftArmTable->setItem(i, 1, new QTableWidgetItem());
+        }
+        ui->leftArmTable->item(i, 0)->setText(label);
+        ui->leftArmTable->item(i, 1)->setText(QString::number(leftArmData[i], 'f', 2));
     }
-    ui->rightArmTextEdit->setText(rightText);
+
+    QStringList rightNames = {
+        "旋转",
+        "左摆",
+        "左旋转",
+        "上摆",
+        "左旋转",
+        "上摆",
+        "左摆"
+    };
+
+    int rightCount = qMin(rightArmData.size(), rightNames.size());
+    for (int i = 0; i < rightCount; ++i) {
+        int id = 7 + i;
+        QString label = QString("ID%1(%2)").arg(id).arg(rightNames[i]);
+        if (!ui->rightArmTable->item(i, 0)) {
+            ui->rightArmTable->setItem(i, 0, new QTableWidgetItem());
+        }
+        if (!ui->rightArmTable->item(i, 1)) {
+            ui->rightArmTable->setItem(i, 1, new QTableWidgetItem());
+        }
+        ui->rightArmTable->item(i, 0)->setText(label);
+        ui->rightArmTable->item(i, 1)->setText(QString::number(rightArmData[i], 'f', 2));
+    }
 
     // 更新状态栏
     showStatusMessage(QString("收到臂数据: 左臂%1个关节, 右臂%2个关节")
@@ -692,7 +817,29 @@ void MainWindow::logHexData(const QByteArray &data, bool isSend)
 {
     QString direction = isSend ? "发送" : "接收";
     QString hexString = data.toHex(' ').toUpper();
-    logMessage(direction + "数据: " + hexString);
+    QString prefix = direction + "数据: ";
+
+    if (data.size() >= 3 &&
+        static_cast<quint8>(data.at(0)) == static_cast<quint8>(SerialProtocol::FRAME_HEADER) &&
+        static_cast<quint8>(data.at(data.size() - 1)) == static_cast<quint8>(SerialProtocol::FRAME_TAIL)) {
+        quint8 cmd = static_cast<quint8>(data.at(1));
+        QString cmdName;
+        switch (cmd) {
+        case SerialProtocol::CMD_GET_ARM_DATA: cmdName = "GET_ARM_DATA"; break;
+        case SerialProtocol::CMD_GET_VERSION: cmdName = "获取版本号"; break;
+        case SerialProtocol::CMD_ENABLE_DATA_STREAM: cmdName = "开启摇操臂数据推送"; break;
+        case SerialProtocol::CMD_DISABLE_DATA_STREAM: cmdName = "禁止摇操臂数据推送"; break;
+        case SerialProtocol::CMD_CALIBRATE: cmdName = "零点标定"; break;
+        case SerialProtocol::CMD_TORQUE_CONTROL: cmdName = "扭矩设置"; break;
+        case SerialProtocol::CMD_SET_PARAMS: cmdName = "SET_PARAMS"; break;
+        default: cmdName = "UNKNOWN"; break;
+        }
+        prefix += QString("[0x%1 %2] ")
+                      .arg(cmd, 2, 16, QLatin1Char('0')).toUpper()
+                      .arg(cmdName);
+    }
+
+    logMessage(prefix + hexString);
 }
 
 QString MainWindow::getCurrentTimeString()
@@ -703,6 +850,22 @@ QString MainWindow::getCurrentTimeString()
 void MainWindow::showStatusMessage(const QString &message, int timeout)
 {
     statusBar()->showMessage(message, timeout);
+}
+
+void MainWindow::setOperationButtonsEnabled(bool enabled)
+{
+    ui->armGetButton->setEnabled(enabled);
+    ui->calibrateButton->setEnabled(enabled);
+    ui->sendCustomButton->setEnabled(enabled);
+    ui->torqueSetButton->setEnabled(enabled);
+}
+
+void MainWindow::sendVersionRequest()
+{
+    QByteArray cmd = SerialProtocol::buildGetVersionCommand();
+    writeData(cmd);
+    logMessage("已发送：自动读取版本号");
+    versionRequestCount++;
 }
 
 void MainWindow::startVersionTimeout()

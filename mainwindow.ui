@@ -18,7 +18,7 @@
     <item>
      <widget class="QTabWidget" name="tabWidget">
       <property name="currentIndex">
-       <number>0</number>
+       <number>2</number>
       </property>
       <widget class="QWidget" name="serialTab">
        <attribute name="title">
@@ -116,39 +116,53 @@
        </attribute>
        <layout class="QVBoxLayout" name="verticalLayout_control">
         <item>
+         <widget class="QGroupBox" name="armControlGroup">
+          <property name="title">
+           <string>臂数据获取控制</string>
+          </property>
+          <layout class="QHBoxLayout" name="horizontalLayout_armControl">
+           <item>
+            <widget class="QPushButton" name="armGetButton">
+             <property name="text">
+              <string>获取</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="armStopButton">
+             <property name="text">
+              <string>停止</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </item>
+        <item>
          <layout class="QHBoxLayout" name="horizontalLayout_2">
           <item>
            <widget class="QGroupBox" name="leftArmGroup">
             <property name="title">
-             <string>左臂位置控制（电机0-6）</string>
+             <string>左臂关节数据（ID0-6）</string>
             </property>
             <layout class="QVBoxLayout" name="verticalLayout_3">
              <item>
-              <widget class="QPushButton" name="leftSingleButton">
-               <property name="text">
-                <string>单次获取</string>
+              <widget class="QTableWidget" name="leftArmTable">
+               <property name="rowCount">
+                <number>7</number>
                </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QPushButton" name="leftContinuousButton">
-               <property name="text">
-                <string>持续获取</string>
+               <property name="columnCount">
+                <number>2</number>
                </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QPushButton" name="leftStopButton">
-               <property name="text">
-                <string>停止</string>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QTextEdit" name="leftArmTextEdit">
-               <property name="readOnly">
-                <bool>true</bool>
-               </property>
+               <row/>
+               <row/>
+               <row/>
+               <row/>
+               <row/>
+               <row/>
+               <row/>
+               <column/>
+               <column/>
               </widget>
              </item>
             </layout>
@@ -157,70 +171,32 @@
           <item>
            <widget class="QGroupBox" name="rightArmGroup">
             <property name="title">
-             <string>右臂位置控制（电机7-13）</string>
+             <string>右臂关节数据（ID7-13）</string>
             </property>
             <layout class="QVBoxLayout" name="verticalLayout_4">
              <item>
-              <widget class="QPushButton" name="rightSingleButton">
-               <property name="text">
-                <string>单次获取</string>
+              <widget class="QTableWidget" name="rightArmTable">
+               <property name="rowCount">
+                <number>7</number>
                </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QPushButton" name="rightContinuousButton">
-               <property name="text">
-                <string>持续获取</string>
+               <property name="columnCount">
+                <number>2</number>
                </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QPushButton" name="rightStopButton">
-               <property name="text">
-                <string>停止</string>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QTextEdit" name="rightArmTextEdit">
-               <property name="readOnly">
-                <bool>true</bool>
-               </property>
+               <row/>
+               <row/>
+               <row/>
+               <row/>
+               <row/>
+               <row/>
+               <row/>
+               <column/>
+               <column/>
               </widget>
              </item>
             </layout>
            </widget>
           </item>
          </layout>
-        </item>
-        <item>
-         <widget class="QGroupBox" name="groupBox_2">
-          <property name="title">
-           <string>持续获取间隔设置</string>
-          </property>
-          <layout class="QHBoxLayout" name="horizontalLayout">
-           <item>
-            <widget class="QLabel" name="label_7">
-             <property name="text">
-              <string>发送间隔（毫秒）:</string>
-             </property>
-            </widget>
-           </item>
-           <item>
-            <widget class="QSpinBox" name="sendIntervalSpinBox">
-             <property name="minimum">
-              <number>1</number>
-             </property>
-             <property name="maximum">
-              <number>10000</number>
-             </property>
-             <property name="value">
-              <number>15</number>
-             </property>
-            </widget>
-           </item>
-          </layout>
-         </widget>
         </item>
        </layout>
       </widget>

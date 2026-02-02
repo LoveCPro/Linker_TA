@@ -34,15 +34,8 @@ private slots:
     void onSerialDataReceived();
     void onSerialErrorOccurred(QSerialPort::SerialPortError error);
 
-    // 左臂控制
-    void onLeftSingleGetClicked();
-    void onLeftContinuousGetClicked();
-    void onLeftStopClicked();
-
-    // 右臂控制
-    void onRightSingleGetClicked();
-    void onRightContinuousGetClicked();
-    void onRightStopClicked();
+    // 臂控制
+    void onArmGetClicked();
 
     // 其他命令
     void onCalibrateClicked();
@@ -61,13 +54,16 @@ private:
     QSerialPort *serialPort;
     QTimer *continuousTimer;
     QTimer *chartUpdateTimer;
+    QTimer *armUpdateTimer;
     QTimer *versionTimeoutTimer;
+    QTimer *versionRetryTimer;
     QTimer *calibrateTimeoutTimer;
 
     QByteArray rxBuffer;
     bool streamEnabled = false;
-    bool acceptingStream = false; // “持续获取”开关（停止后不再更新UI，但仍可继续读串口）
-    bool singleShotPending = false; // “单次获取”开关：收到一次56字节数据后自动停止更新
+    bool acceptingStream = false; // 臂数据获取开关（停止后不再更新UI，但仍可继续读串口）
+    int versionRequestCount = 0;
+    bool versionReceived = false;
 
     // 数据存储
     QVector<float> leftArmData;
@@ -107,6 +103,8 @@ private:
     void logHexData(const QByteArray &data, bool isSend = false);
 
     // 工具函数
+    void setOperationButtonsEnabled(bool enabled);
+    void sendVersionRequest();
     QString getCurrentTimeString();
     void showStatusMessage(const QString &message, int timeout = 5000);
     void startVersionTimeout();

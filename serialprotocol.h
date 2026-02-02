@@ -10,13 +10,13 @@ class SerialProtocol
 public:
     // 命令类型枚举
     enum CommandType {
-        CMD_GET_ARM_DATA = 0x01,      // 获取臂数据
-        CMD_GET_VERSION = 0x14,       // 读取版本号
+        CMD_GET_ARM_DATA = 0x01,       // 获取臂数据
+        CMD_GET_VERSION = 0x14,        // 读取版本号
         CMD_ENABLE_DATA_STREAM = 0x15, // 启用数据流
-        CMD_CALIBRATE = 0x17,         // 标定
-        // 注意：扭矩设置协议文档未更新，这里先预留命令号（后续按协议改）
-        CMD_TORQUE_CONTROL = 0x20,    // 扭矩控制（占位）
-        CMD_SET_PARAMS = 0x21         // 参数设置（占位）
+        CMD_DISABLE_DATA_STREAM = 0x16, // 禁用数据流
+        CMD_CALIBRATE = 0x17,          // 标定
+        CMD_TORQUE_CONTROL = 0x30,     // 扭矩控制
+        CMD_SET_PARAMS = 0x21          // 参数设置（占位）
     };
 
     // 结果码
@@ -55,16 +55,14 @@ public:
     static QByteArray buildCalibrateCommand();
     static QByteArray buildGetVersionCommand();
     static QByteArray buildEnableDataStreamCommand();
+    static QByteArray buildDisableDataStreamCommand();
     static QByteArray buildGetArmDataCommand();
 
-    // 扭矩控制命令（待协议更新）
     static QByteArray buildTorqueControlCommand(quint8 id, float speed, float acceleration, float torque, float position);
     static QByteArray buildSetParamsCommand(quint8 id, float speed, float acceleration, float torque, float target);
 
-    // 解析臂数据
     static bool parseArmData(const QByteArray &data, QVector<float> &armData);
 
-    // 浮点数转字节数组（小端序）
     static QByteArray floatToBytes(float value);
     static float bytesToFloat(const QByteArray &bytes, int offset = 0);
 };

@@ -117,6 +117,11 @@ QByteArray SerialProtocol::buildEnableDataStreamCommand()
     return buildCommandFrame(CMD_ENABLE_DATA_STREAM);
 }
 
+QByteArray SerialProtocol::buildDisableDataStreamCommand()
+{
+    return buildCommandFrame(CMD_DISABLE_DATA_STREAM);
+}
+
 QByteArray SerialProtocol::buildGetArmDataCommand()
 {
     return buildCommandFrame(CMD_GET_ARM_DATA);
@@ -126,13 +131,27 @@ QByteArray SerialProtocol::buildTorqueControlCommand(quint8 id, float speed, flo
 {
     QByteArray data;
 
-    // 命令格式（待协议确认）
-    // ID + speed + acceleration + torque + position
+    // ID (1字节)
     data.append(static_cast<char>(id));
-    data.append(floatToBytes(speed));
-    data.append(floatToBytes(acceleration));
-    data.append(floatToBytes(torque));
-    data.append(floatToBytes(position));
+    
+    // Position (2字节, int16小端, 假设无缩放或需要根据协议确认缩放)
+    qint16 posInt = static_cast<qint16>(position);
+    data.append(static_cast<char>(posInt & 0xFF));
+    data.append(static_cast<char>((posInt >> 8) & 0xFF));
+
+    // Speed (2字节, int16小端)
+    qint16 speedInt = static_cast<qint16>(speed);
+    data.append(static_cast<char>(speedInt & 0xFF));
+    data.append(static_cast<char>((speedInt >> 8) & 0xFF));
+
+    // Acceleration (1字节, uint8)
+    quint8 accInt = static_cast<quint8>(acceleration);
+    data.append(static_cast<char>(accInt));
+
+    // Torque (2字节, int16小端)
+    qint16 torqueInt = static_cast<qint16>(torque);
+    data.append(static_cast<char>(torqueInt & 0xFF));
+    data.append(static_cast<char>((torqueInt >> 8) & 0xFF));
 
     return buildCommandFrame(CMD_TORQUE_CONTROL, data);
 }
