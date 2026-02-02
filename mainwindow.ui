@@ -22,9 +22,52 @@
       </property>
       <widget class="QWidget" name="serialTab">
        <attribute name="title">
-        <string>串口设置</string>
+        <string>通信设置</string>
        </attribute>
        <layout class="QVBoxLayout" name="verticalLayout_2">
+        <item>
+         <widget class="QGroupBox" name="commModeGroup">
+          <property name="title">
+           <string>通信模式</string>
+          </property>
+          <layout class="QHBoxLayout" name="horizontalLayout_commMode">
+           <item>
+            <widget class="QLabel" name="label_commMode">
+             <property name="text">
+              <string>模式:</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QComboBox" name="commModeComboBox">
+             <item>
+              <property name="text">
+               <string>无线摇操臂 (串口)</string>
+              </property>
+             </item>
+             <item>
+              <property name="text">
+               <string>有线摇操臂 (CAN)</string>
+              </property>
+             </item>
+            </widget>
+           </item>
+           <item>
+            <spacer name="horizontalSpacer_commMode">
+             <property name="orientation">
+              <enum>Qt::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>40</width>
+               <height>20</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+          </layout>
+         </widget>
+        </item>
         <item>
          <widget class="QGroupBox" name="groupBox">
           <property name="title">
@@ -108,6 +151,45 @@
           </layout>
          </widget>
         </item>
+        <item>
+         <widget class="QGroupBox" name="canGroup">
+          <property name="title">
+           <string>CAN连接</string>
+          </property>
+          <property name="visible">
+           <bool>false</bool>
+          </property>
+          <layout class="QHBoxLayout" name="horizontalLayout_can">
+           <item>
+            <widget class="QPushButton" name="canConnectButton">
+             <property name="text">
+              <string>连接CAN</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QLabel" name="canStatusLabel">
+             <property name="text">
+              <string>CAN状态: 未连接</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="horizontalSpacer_can">
+             <property name="orientation">
+              <enum>Qt::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>40</width>
+               <height>20</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+          </layout>
+         </widget>
+        </item>
        </layout>
       </widget>
       <widget class="QWidget" name="controlTab">
@@ -118,7 +200,7 @@
         <item>
          <widget class="QGroupBox" name="armControlGroup">
           <property name="title">
-           <string>臂数据获取控制</string>
+           <string>臂数据获取控制（无线模式）</string>
           </property>
           <layout class="QHBoxLayout" name="horizontalLayout_armControl">
            <item>
@@ -134,6 +216,151 @@
               <string>停止</string>
              </property>
             </widget>
+           </item>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <widget class="QGroupBox" name="canArmControlGroup">
+          <property name="title">
+           <string>臂数据获取控制（有线模式）</string>
+          </property>
+          <property name="visible">
+           <bool>false</bool>
+          </property>
+          <layout class="QVBoxLayout" name="verticalLayout_canArmControl">
+           <item>
+            <layout class="QHBoxLayout" name="horizontalLayout_leftArm">
+             <item>
+              <widget class="QLabel" name="label_leftArm">
+               <property name="text">
+                <string>左臂 (ID0-6):</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="canLeftArmSingleButton">
+               <property name="text">
+                <string>单次获取</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="canLeftArmContinuousButton">
+               <property name="text">
+                <string>持续获取</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="canLeftArmStopButton">
+               <property name="text">
+                <string>停止</string>
+               </property>
+               <property name="enabled">
+                <bool>false</bool>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <spacer name="horizontalSpacer_leftArm">
+               <property name="orientation">
+                <enum>Qt::Horizontal</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>40</width>
+                 <height>20</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <layout class="QHBoxLayout" name="horizontalLayout_rightArm">
+             <item>
+              <widget class="QLabel" name="label_rightArm">
+               <property name="text">
+                <string>右臂 (ID7-13):</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="canRightArmSingleButton">
+               <property name="text">
+                <string>单次获取</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="canRightArmContinuousButton">
+               <property name="text">
+                <string>持续获取</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="canRightArmStopButton">
+               <property name="text">
+                <string>停止</string>
+               </property>
+               <property name="enabled">
+                <bool>false</bool>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <spacer name="horizontalSpacer_rightArm">
+               <property name="orientation">
+                <enum>Qt::Horizontal</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>40</width>
+                 <height>20</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <layout class="QHBoxLayout" name="horizontalLayout_pollInterval">
+             <item>
+              <widget class="QLabel" name="label_pollInterval">
+               <property name="text">
+                <string>轮询间隔 (ms):</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QSpinBox" name="pollIntervalSpinBox">
+               <property name="minimum">
+                <number>100</number>
+               </property>
+               <property name="maximum">
+                <number>5000</number>
+               </property>
+               <property name="value">
+                <number>500</number>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <spacer name="horizontalSpacer_pollInterval">
+               <property name="orientation">
+                <enum>Qt::Horizontal</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>40</width>
+                 <height>20</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+            </layout>
            </item>
           </layout>
          </widget>
@@ -321,6 +548,46 @@
         <widget class="QLabel" name="versionLabel">
          <property name="text">
           <string>版本: 未知</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="canIdLabel">
+         <property name="visible">
+          <bool>false</bool>
+         </property>
+         <property name="text">
+          <string>CAN ID (Hex):</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLineEdit" name="canIdEdit">
+         <property name="visible">
+          <bool>false</bool>
+         </property>
+         <property name="maximumWidth">
+          <number>60</number>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="canIdLabel">
+         <property name="visible">
+          <bool>false</bool>
+         </property>
+         <property name="text">
+          <string>CAN ID (Hex):</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLineEdit" name="canIdEdit">
+         <property name="visible">
+          <bool>false</bool>
+         </property>
+         <property name="maximumWidth">
+          <number>60</number>
          </property>
         </widget>
        </item>

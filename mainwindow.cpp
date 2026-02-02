@@ -1,9 +1,11 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
 #include "serialprotocol.h"
+#include "cancommunication.h"
 #include "log.h"
 #include <QSerialPortInfo>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QDateTime>
 #include <QTextCursor>
 #include <QtCharts/QChartView>
@@ -11,6 +13,7 @@
 #include <QHeaderView>
 #include <QAbstractItemView>
 #include <QGridLayout>
+#include <QRegularExpressionValidator>
 
 // 构造函数
 MainWindow::MainWindow(QWidget *parent)
@@ -23,6 +26,14 @@ MainWindow::MainWindow(QWidget *parent)
     , versionTimeoutTimer(new QTimer(this))
     , versionRetryTimer(new QTimer(this))
     , calibrateTimeoutTimer(new QTimer(this))
+    , canComm(nullptr)
+    , currentMode(CommunicationMode::Serial)
+    , leftArmPollTimer(new QTimer(this))
+    , rightArmPollTimer(new QTimer(this))
+    , bothArmsPollTimer(new QTimer(this))
+    , leftArmContinuousEnabled(false)
+    , rightArmContinuousEnabled(false)
+    , bothArmsContinuousEnabled(false)
     , leftArmChart(new QChart())
     , rightArmChart(new QChart())
     , leftAxisX(new QDateTimeAxis())
@@ -51,17 +62,21 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    cleanupCANCommunication();
     delete ui;
 }
 
 void MainWindow::initUI()
 {
     // 设置窗口标题
-    setWindowTitle("遥操作臂控制器");
+    setWindowTitle(QString("遥操臂控制器  v%1").arg(APP_VERSION));
 
     // 初始化波特率
-    ui->baudRateComboBox->addItems({"115200", "256000", "921600"});
+    ui->baudRateComboBox->setEditable(true); // 允许手动输入
+    ui->baudRateComboBox->addItems({"115200", "256000", "921600", "1000000", "2000000", "3000000"});
     ui->baudRateComboBox->setCurrentText("921600");
+    // 设置验证器，只允许输入数字
+    ui->baudRateComboBox->setValidator(new QIntValidator(1200, 4000000, this));
 
     // 初始化数据位
     ui->dataBitsComboBox->addItems({"5", "6", "7", "8"});
@@ -83,6 +98,10 @@ void MainWindow::initUI()
     for (int i = 0; i < 14; ++i) {
         ui->idComboBox->addItem(QString::number(i));
     }
+
+    // 初始化CAN ID输入验证 (Hex)
+    QRegularExpression hexRegex("[0-9A-Fa-f]{1,3}");
+    ui->canIdEdit->setValidator(new QRegularExpressionValidator(hexRegex, this));
 
     if (ui->armStopButton) {
         ui->armStopButton->hide();
@@ -141,6 +160,90 @@ void MainWindow::initUI()
                       + rightRowHeight * ui->rightArmTable->rowCount();
     ui->rightArmTable->setMinimumHeight(rightHeight);
     ui->rightArmTable->setMaximumHeight(rightHeight);
+
+    // 隐藏扭矩设置Tab
+    ui->tabWidget->removeTab(2);
+
+    // 增加双臂操作按钮及重构布局以对齐
+    
+    // 1. 清理旧布局和不需要的控件 (包括UI文件中定义的Label)
+    // 获取所有直接子控件
+    const QObjectList& children = ui->canArmControlGroup->children();
+    for (QObject* obj : children) {
+        if (obj->isWidgetType()) {
+            QWidget* w = static_cast<QWidget*>(obj);
+            // 保留需要的控件
+            if (w != ui->canLeftArmSingleButton && 
+                w != ui->canLeftArmContinuousButton && 
+                w != ui->canRightArmSingleButton && 
+                w != ui->canRightArmContinuousButton && 
+                w != ui->pollIntervalSpinBox) 
+            {
+                // 删除其他所有控件（包括旧的Label、Spacer等如果有Widget包装）
+                w->hide();
+                w->deleteLater();
+            }
+        }
+    }
+    
+    // 删除旧布局（如果有）
+    if (ui->canArmControlGroup->layout()) {
+        delete ui->canArmControlGroup->layout();
+    }
+
+    QGridLayout *newLayout = new QGridLayout();
+    ui->canArmControlGroup->setLayout(newLayout);
+    newLayout->setHorizontalSpacing(20); // 增加水平间距
+    newLayout->setVerticalSpacing(15);   // 增加垂直间距
+    newLayout->setContentsMargins(15, 25, 15, 15); // 增加边距
+
+    // 定义按钮样式
+    QString styleBlue = "QPushButton { background-color: #2196F3; color: white; border-radius: 4px; padding: 6px; font-weight: bold; } "
+                        "QPushButton:pressed { background-color: #1976D2; } "
+                        "QPushButton:disabled { background-color: #E0E0E0; color: #A0A0A0; }";
+    
+    // 应用样式到现有按钮
+    ui->canLeftArmSingleButton->setStyleSheet(styleBlue);
+    ui->canLeftArmContinuousButton->setStyleSheet(styleBlue);
+    ui->canRightArmSingleButton->setStyleSheet(styleBlue);
+    ui->canRightArmContinuousButton->setStyleSheet(styleBlue);
+
+    // 左臂控制行
+    newLayout->addWidget(new QLabel("左臂:", ui->canArmControlGroup), 0, 0);
+    newLayout->addWidget(ui->canLeftArmSingleButton, 0, 1);
+    newLayout->addWidget(ui->canLeftArmContinuousButton, 0, 2);
+    
+    // 右臂控制行
+    newLayout->addWidget(new QLabel("右臂:", ui->canArmControlGroup), 1, 0);
+    newLayout->addWidget(ui->canRightArmSingleButton, 1, 1);
+    newLayout->addWidget(ui->canRightArmContinuousButton, 1, 2);
+
+    // 双臂控制行
+    newLayout->addWidget(new QLabel("双臂 (ID0-13):", ui->canArmControlGroup), 2, 0);
+    canBothArmsSingleButton = new QPushButton("单次获取", ui->canArmControlGroup);
+    canBothArmsContinuousButton = new QPushButton("持续获取", ui->canArmControlGroup);
+    
+    // 应用样式到新按钮
+    canBothArmsSingleButton->setStyleSheet(styleBlue);
+    canBothArmsContinuousButton->setStyleSheet(styleBlue);
+
+    newLayout->addWidget(canBothArmsSingleButton, 2, 1);
+    newLayout->addWidget(canBothArmsContinuousButton, 2, 2);
+
+    // 轮询间隔行
+    newLayout->addWidget(new QLabel("轮询间隔(ms):", ui->canArmControlGroup), 3, 0);
+    newLayout->addWidget(ui->pollIntervalSpinBox, 3, 1, 1, 2); // 跨两列
+
+    // 添加弹簧
+    newLayout->setRowStretch(4, 1);
+    
+    // 设置高精度定时器
+    leftArmPollTimer->setTimerType(Qt::PreciseTimer);
+    rightArmPollTimer->setTimerType(Qt::PreciseTimer);
+    bothArmsPollTimer->setTimerType(Qt::PreciseTimer);
+
+    // 允许更小的轮询间隔
+    ui->pollIntervalSpinBox->setMinimum(1);
 }
 
 void MainWindow::initCharts()
@@ -234,6 +337,9 @@ void MainWindow::initConnections()
     connect(chartUpdateTimer, &QTimer::timeout, this, &MainWindow::updateCharts);
     chartUpdateTimer->start(1000); // 每秒更新一次图表
     connect(armUpdateTimer, &QTimer::timeout, this, &MainWindow::updateUIWithArmData);
+    if (!armUpdateTimer->isActive()) {
+        armUpdateTimer->start(500); // 0.5s refresh rate
+    }
 
     versionTimeoutTimer->setSingleShot(true);
     connect(versionTimeoutTimer, &QTimer::timeout, [this]() {
@@ -250,6 +356,27 @@ void MainWindow::initConnections()
             versionRetryTimer->start(1000);
         }
     });
+
+    // 通信模式切换
+    connect(ui->commModeComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::onCommunicationModeChanged);
+
+    // CAN相关连接
+    connect(ui->canConnectButton, &QPushButton::clicked, this, &MainWindow::onCANConnectClicked);
+    connect(ui->canLeftArmSingleButton, &QPushButton::clicked, this, &MainWindow::onCANLeftArmSingleClicked);
+    connect(ui->canLeftArmContinuousButton, &QPushButton::clicked, this, &MainWindow::onCANLeftArmContinuousClicked);
+    connect(ui->canRightArmSingleButton, &QPushButton::clicked, this, &MainWindow::onCANRightArmSingleClicked);
+    connect(ui->canRightArmContinuousButton, &QPushButton::clicked, this, &MainWindow::onCANRightArmContinuousClicked);
+    
+    // 双臂操作
+    if (canBothArmsSingleButton) {
+        connect(canBothArmsSingleButton, &QPushButton::clicked, this, &MainWindow::onCANBothArmsSingleClicked);
+        connect(canBothArmsContinuousButton, &QPushButton::clicked, this, &MainWindow::onCANBothArmsContinuousClicked);
+    }
+
+    // CAN轮询定时器
+    connect(leftArmPollTimer, &QTimer::timeout, this, &MainWindow::onCANLeftArmPollTimeout);
+    connect(rightArmPollTimer, &QTimer::timeout, this, &MainWindow::onCANRightArmPollTimeout);
+    connect(bothArmsPollTimer, &QTimer::timeout, this, &MainWindow::onCANBothArmsPollTimeout);
 
     calibrateTimeoutTimer->setSingleShot(true);
     connect(calibrateTimeoutTimer, &QTimer::timeout, [this]() {
@@ -576,6 +703,7 @@ void MainWindow::onSerialErrorOccurred(QSerialPort::SerialPortError error)
 
     if (error == QSerialPort::ResourceError) {
         closeSerialPort();
+        clearArmDataUI(); // 断开时清空表格
         QMessageBox::critical(this, "错误", "串口资源错误: " + serialPort->errorString());
     }
 }
@@ -600,6 +728,11 @@ void MainWindow::onArmGetClicked()
     if (!streamEnabled) {
         ensureStreamEnabled();
         acceptingStream = true;
+        
+        // 重置统计
+        serialStartTime = QDateTime::currentMSecsSinceEpoch();
+        serialRxCount = 0;
+        
         armUpdateTimer->start(500);
         ui->armGetButton->setText("停止");
         ui->armGetButton->setStyleSheet("background-color: green; color: white;");
@@ -610,9 +743,17 @@ void MainWindow::onArmGetClicked()
         writeData(cmd);
         armUpdateTimer->stop();
         acceptingStream = false;
+        
+        // 计算并显示最终频率
+        qint64 duration = QDateTime::currentMSecsSinceEpoch() - serialStartTime;
+        double freq = 0;
+        if (duration > 0) {
+            freq = (double)serialRxCount * 1000.0 / duration;
+        }
+        
         ui->armGetButton->setText("获取");
         ui->armGetButton->setStyleSheet("background-color: #F44336; color: white;");
-        logMessage("臂数据：已停止获取（不再更新界面，仍保持串口接收）");
+        logMessage(QString("臂数据：已停止获取，平均接收频率: %1 Hz").arg(freq, 0, 'f', 2));
         showStatusMessage("臂数据获取已停止");
     }
 }
@@ -625,9 +766,18 @@ void MainWindow::onContinuousTimer()
 
 void MainWindow::onCalibrateClicked()
 {
-    QByteArray cmd = SerialProtocol::buildCalibrateCommand();
-    writeData(cmd);
-    LOG_SERIAL_D("Calibrate command:" << cmd.toHex(' ').toUpper());
+    if (currentMode == CommunicationMode::Serial) {
+        QByteArray cmd = SerialProtocol::buildCalibrateCommand();
+        writeData(cmd);
+        LOG_SERIAL_D("Calibrate command:" << cmd.toHex(' ').toUpper());
+    } else if (currentMode == CommunicationMode::CAN) {
+        if (canComm && canComm->isConnected()) {
+            canComm->sendCalibrate();
+            logMessage("已发送校准命令 (CAN)");
+        } else {
+            logMessage("CAN未连接，无法发送校准命令");
+        }
+    }
     startCalibrateTimeout();
 }
 
@@ -638,17 +788,49 @@ void MainWindow::onClearLogClicked()
 
 void MainWindow::onSendCustomMessageClicked()
 {
-    QString hexString = ui->customMessageEdit->text().trimmed();
-    hexString.remove(' ');
+    if (currentMode == CommunicationMode::CAN) {
+        // CAN模式发送逻辑
+        QString idStr = ui->canIdEdit->text().trimmed();
+        if (idStr.isEmpty()) {
+            QMessageBox::warning(this, "警告", "请输入CAN ID");
+            return;
+        }
 
-    if (hexString.isEmpty()) {
-        QMessageBox::warning(this, "警告", "请输入自定义消息");
-        return;
+        bool ok;
+        quint16 id = idStr.toUShort(&ok, 16);
+        if (!ok) {
+            QMessageBox::warning(this, "警告", "无效的CAN ID (请输入16进制数值)");
+            return;
+        }
+
+        QString hexString = ui->customMessageEdit->text().trimmed();
+        hexString.remove(' ');
+        QByteArray data = QByteArray::fromHex(hexString.toLatin1());
+
+        if (data.size() > 8) {
+            QMessageBox::warning(this, "警告", "CAN数据不能超过8字节");
+            return;
+        }
+
+        if (canComm && canComm->isConnected()) {
+            canComm->sendCustomMessage(id, data);
+        } else {
+            QMessageBox::warning(this, "警告", "CAN未连接");
+        }
+    } else {
+        // 串口模式发送逻辑
+        QString hexString = ui->customMessageEdit->text().trimmed();
+        hexString.remove(' ');
+
+        if (hexString.isEmpty()) {
+            QMessageBox::warning(this, "警告", "请输入自定义消息");
+            return;
+        }
+
+        QByteArray data = QByteArray::fromHex(hexString.toLatin1());
+        writeData(data);
+        LOG_SERIAL_D("Custom command:" << data.toHex(' ').toUpper());
     }
-
-    QByteArray data = QByteArray::fromHex(hexString.toLatin1());
-    writeData(data);
-    LOG_SERIAL_D("Custom command:" << data.toHex(' ').toUpper());
 }
 
 void MainWindow::onTorqueSetClicked()
@@ -671,6 +853,11 @@ void MainWindow::onTorqueSetClicked()
 void MainWindow::processArmData(const QVector<float> &armData)
 {
     if (armData.size() < 14) return;
+
+    // 更新无线接收计数
+    if (currentMode == CommunicationMode::Serial && acceptingStream) {
+        serialRxCount++;
+    }
 
     // 分离左右臂数据
     leftArmData.clear();
@@ -701,65 +888,92 @@ void MainWindow::processArmData(const QVector<float> &armData)
 
 void MainWindow::updateUIWithArmData()
 {
-    if (!acceptingStream) return;
+    // 仅在串口模式下检查 acceptingStream
+    if (currentMode == CommunicationMode::Serial && !acceptingStream) return;
 
-    if (leftArmData.isEmpty() || rightArmData.isEmpty()) return;
+    // 分别更新左臂和右臂数据，不强制要求两者都有
 
-    QStringList leftNames = {
-        "旋转",
-        "右摆",
-        "右旋转",
-        "上摆",
-        "右旋转",
-        "上摆",
-        "右摆"
-    };
+    if (!leftArmData.isEmpty()) {
+        QStringList leftNames = {
+            "旋转",
+            "右摆",
+            "右旋转",
+            "上摆",
+            "右旋转",
+            "上摆",
+            "右摆"
+        };
 
-    int leftCount = qMin(leftArmData.size(), leftNames.size());
-    for (int i = 0; i < leftCount; ++i) {
-        QString label = QString("ID%1(%2)").arg(i).arg(leftNames[i]);
-        if (!ui->leftArmTable->item(i, 0)) {
-            ui->leftArmTable->setItem(i, 0, new QTableWidgetItem());
+        int leftCount = qMin(leftArmData.size(), leftNames.size());
+        for (int i = 0; i < leftCount; ++i) {
+            QString label = QString("ID%1(%2)").arg(i).arg(leftNames[i]);
+            if (!ui->leftArmTable->item(i, 0)) {
+                ui->leftArmTable->setItem(i, 0, new QTableWidgetItem());
+            }
+            if (!ui->leftArmTable->item(i, 1)) {
+                ui->leftArmTable->setItem(i, 1, new QTableWidgetItem());
+            }
+            ui->leftArmTable->item(i, 0)->setText(label);
+            ui->leftArmTable->item(i, 1)->setText(QString::number(leftArmData[i], 'f', 2));
         }
-        if (!ui->leftArmTable->item(i, 1)) {
-            ui->leftArmTable->setItem(i, 1, new QTableWidgetItem());
-        }
-        ui->leftArmTable->item(i, 0)->setText(label);
-        ui->leftArmTable->item(i, 1)->setText(QString::number(leftArmData[i], 'f', 2));
     }
 
-    QStringList rightNames = {
-        "旋转",
-        "左摆",
-        "左旋转",
-        "上摆",
-        "左旋转",
-        "上摆",
-        "左摆"
-    };
+    if (!rightArmData.isEmpty()) {
+        QStringList rightNames = {
+            "旋转",
+            "左摆",
+            "左旋转",
+            "上摆",
+            "左旋转",
+            "上摆",
+            "左摆"
+        };
 
-    int rightCount = qMin(rightArmData.size(), rightNames.size());
-    for (int i = 0; i < rightCount; ++i) {
-        int id = 7 + i;
-        QString label = QString("ID%1(%2)").arg(id).arg(rightNames[i]);
-        if (!ui->rightArmTable->item(i, 0)) {
-            ui->rightArmTable->setItem(i, 0, new QTableWidgetItem());
+        int rightCount = qMin(rightArmData.size(), rightNames.size());
+        for (int i = 0; i < rightCount; ++i) {
+            int id = 7 + i;
+            QString label = QString("ID%1(%2)").arg(id).arg(rightNames[i]);
+            if (!ui->rightArmTable->item(i, 0)) {
+                ui->rightArmTable->setItem(i, 0, new QTableWidgetItem());
+            }
+            if (!ui->rightArmTable->item(i, 1)) {
+                ui->rightArmTable->setItem(i, 1, new QTableWidgetItem());
+            }
+            ui->rightArmTable->item(i, 0)->setText(label);
+            ui->rightArmTable->item(i, 1)->setText(QString::number(rightArmData[i], 'f', 2));
         }
-        if (!ui->rightArmTable->item(i, 1)) {
-            ui->rightArmTable->setItem(i, 1, new QTableWidgetItem());
-        }
-        ui->rightArmTable->item(i, 0)->setText(label);
-        ui->rightArmTable->item(i, 1)->setText(QString::number(rightArmData[i], 'f', 2));
     }
 
-    // 更新状态栏
-    showStatusMessage(QString("收到臂数据: 左臂%1个关节, 右臂%2个关节")
-                          .arg(leftArmData.size()).arg(rightArmData.size()));
+    qint64 now = QDateTime::currentMSecsSinceEpoch();
+    double sendFreq = 0.0;
+    double recvFreq = 0.0;
+    if (leftArmContinuousEnabled && leftSendStartTime > 0 && leftArmStartTime > 0) {
+        qint64 sd = now - leftSendStartTime;
+        qint64 rd = now - leftArmStartTime;
+        if (sd > 0) sendFreq = (double)leftSendCount * 1000.0 / sd;
+        if (rd > 0) recvFreq = (double)leftArmFrameCount * 1000.0 / rd;
+    } else if (rightArmContinuousEnabled && rightSendStartTime > 0 && rightArmStartTime > 0) {
+        qint64 sd = now - rightSendStartTime;
+        qint64 rd = now - rightArmStartTime;
+        if (sd > 0) sendFreq = (double)rightSendCount * 1000.0 / sd;
+        if (rd > 0) recvFreq = (double)rightArmFrameCount * 1000.0 / rd;
+    } else if (bothArmsContinuousEnabled && bothSendStartTime > 0 && bothArmsStartTime > 0) {
+        qint64 sd = now - bothSendStartTime;
+        qint64 rd = now - bothArmsStartTime;
+        if (sd > 0) sendFreq = (double)bothSendCount * 1000.0 / sd;
+        if (rd > 0) recvFreq = (double)bothArmsFrameCount * 1000.0 / rd;
+    } else if (currentMode == CommunicationMode::Serial && acceptingStream && serialStartTime > 0) {
+        qint64 rd = now - serialStartTime;
+        // 串口模式下如果是数据流推送，发送频率视为0（或者统计心跳包，这里暂定为0）
+        sendFreq = 0.0; 
+        if (rd > 0) recvFreq = (double)serialRxCount * 1000.0 / rd;
+    }
+    showStatusMessage(QString("发送频率: %1 Hz, 接收频率: %2 Hz").arg(sendFreq, 0, 'f', 2).arg(recvFreq, 0, 'f', 2));
 }
 
 void MainWindow::updateCharts()
 {
-    if (leftArmHistory.isEmpty() || rightArmHistory.isEmpty()) return;
+    if (leftArmHistory.isEmpty() && rightArmHistory.isEmpty()) return;
 
     // 清空现有数据
     for (auto series : leftSeries) {
@@ -771,7 +985,7 @@ void MainWindow::updateCharts()
 
     // 添加新数据
     qint64 currentTime = QDateTime::currentDateTime().toMSecsSinceEpoch();
-    int historySize = qMin(leftArmHistory.size(), rightArmHistory.size());
+    int historySize = qMax(leftArmHistory.size(), rightArmHistory.size());
 
     for (int i = 0; i < historySize; ++i) {
         qint64 time = currentTime - (historySize - i) * 1000; // 假设每秒一个数据点
@@ -793,7 +1007,7 @@ void MainWindow::updateCharts()
         }
     }
 
-    // 更新X轴范围（左右图表共用同一时间范围）
+    // 更新X轴范围
     qint64 minTime = currentTime - historySize * 1000;
     qint64 maxTime = currentTime;
     leftAxisX->setRange(QDateTime::fromMSecsSinceEpoch(minTime),
@@ -862,9 +1076,18 @@ void MainWindow::setOperationButtonsEnabled(bool enabled)
 
 void MainWindow::sendVersionRequest()
 {
-    QByteArray cmd = SerialProtocol::buildGetVersionCommand();
-    writeData(cmd);
-    logMessage("已发送：自动读取版本号");
+    if (currentMode == CommunicationMode::Serial) {
+        if (serialPort->isOpen()) {
+            QByteArray cmd = SerialProtocol::buildGetVersionCommand();
+            writeData(cmd);
+            logMessage("已发送：自动读取版本号 (串口)");
+        }
+    } else if (currentMode == CommunicationMode::CAN) {
+        if (canComm && canComm->isConnected()) {
+            canComm->sendGetVersion();
+            logMessage("已发送：自动读取版本号 (CAN)");
+        }
+    }
     versionRequestCount++;
 }
 
@@ -890,4 +1113,540 @@ void MainWindow::stopCalibrateTimeout()
     if (calibrateTimeoutTimer->isActive()) {
         calibrateTimeoutTimer->stop();
     }
+}
+
+// ==================== CAN通信相关实现 ====================
+
+void MainWindow::initCANCommunication()
+{
+    if (!canComm) {
+        canComm = new CANCommunication(this);
+
+        // 连接CAN信号
+        connect(canComm, &CANCommunication::statusChanged, this, &MainWindow::onCANStatusChanged);
+        connect(canComm, &CANCommunication::leftArmDataReceived, this, &MainWindow::onCANLeftArmDataReceived);
+        connect(canComm, &CANCommunication::rightArmDataReceived, this, &MainWindow::onCANRightArmDataReceived);
+        connect(canComm, &CANCommunication::logMessage, this, &MainWindow::onCANLogMessage);
+        connect(canComm, &CANCommunication::errorOccurred, this, &MainWindow::onCANErrorOccurred);
+        connect(canComm, &CANCommunication::calibrationResultReceived, [this](bool success) {
+            stopCalibrateTimeout();
+            if (success) {
+                logMessage("零点标定成功 (CAN)");
+                showStatusMessage("零点标定成功 (CAN)");
+            } else {
+                logMessage("零点标定失败 (CAN)");
+                showStatusMessage("零点标定失败 (CAN)");
+            }
+        });
+        connect(canComm, &CANCommunication::versionReceived, [this](const QString &version) {
+            ui->versionLabel->setText("版本: " + version);
+            logMessage("获取版本成功 (CAN): " + version);
+            showStatusMessage("获取版本成功 (CAN): " + version);
+            stopVersionTimeout();
+            if (versionRetryTimer->isActive()) {
+                versionRetryTimer->stop();
+            }
+            versionReceived = true;
+        });
+    }
+}
+
+void MainWindow::cleanupCANCommunication()
+{
+    stopCANPolling();
+
+    if (canComm) {
+        if (canComm->isConnected()) {
+            canComm->disconnect();
+        }
+        delete canComm;
+        canComm = nullptr;
+    }
+
+    leftArmContinuousEnabled = false;
+    rightArmContinuousEnabled = false;
+}
+
+void MainWindow::onCommunicationModeChanged(int index)
+{
+    CommunicationMode newMode = static_cast<CommunicationMode>(index);
+
+    if (newMode == currentMode) {
+        return;
+    }
+
+    // 断开现有连接
+    if (currentMode == CommunicationMode::Serial && serialPort->isOpen()) {
+        closeSerialPort();
+    } else if (currentMode == CommunicationMode::CAN && canComm && canComm->isConnected()) {
+        canComm->disconnect();
+    }
+
+    currentMode = newMode;
+    updateUIForCommunicationMode(newMode);
+
+    QString modeName = (newMode == CommunicationMode::Serial) ? "无线摇操臂 (串口)" : "有线摇操臂 (CAN)";
+    logMessage(QString("切换通信模式: %1").arg(modeName));
+    showStatusMessage(QString("已切换到%1模式").arg(modeName));
+}
+
+void MainWindow::updateUIForCommunicationMode(CommunicationMode mode)
+{
+    if (mode == CommunicationMode::Serial) {
+        // 显示串口控件，隐藏CAN控件
+        ui->groupBox->setVisible(true);
+        ui->canGroup->setVisible(false);
+        ui->armControlGroup->setVisible(true);
+        ui->canArmControlGroup->setVisible(false);
+
+        // 隐藏CAN ID输入，恢复标签
+        ui->canIdLabel->setVisible(false);
+        ui->canIdEdit->setVisible(false);
+        ui->label_13->setText("发送自定义消息:");
+
+        enableSerialControls(true);
+        enableCANControls(false);
+    } else {
+        // 隐藏串口控件，显示CAN控件
+        ui->groupBox->setVisible(false);
+        ui->canGroup->setVisible(true);
+        ui->armControlGroup->setVisible(false);
+        ui->canArmControlGroup->setVisible(true);
+
+        // 显示CAN ID输入，更改标签
+        ui->canIdLabel->setVisible(true);
+        ui->canIdEdit->setVisible(true);
+        ui->label_13->setText("数据 (Hex):");
+
+        enableSerialControls(false);
+        enableCANControls(true);
+    }
+}
+
+void MainWindow::enableSerialControls(bool enabled)
+{
+    ui->portComboBox->setEnabled(enabled && !serialPort->isOpen());
+    ui->baudRateComboBox->setEnabled(enabled && !serialPort->isOpen());
+    ui->dataBitsComboBox->setEnabled(enabled && !serialPort->isOpen());
+    ui->parityComboBox->setEnabled(enabled && !serialPort->isOpen());
+    ui->stopBitsComboBox->setEnabled(enabled && !serialPort->isOpen());
+    ui->flowControlComboBox->setEnabled(enabled && !serialPort->isOpen());
+    ui->refreshPortsButton->setEnabled(enabled && !serialPort->isOpen());
+}
+
+void MainWindow::enableCANControls(bool enabled)
+{
+    bool isConnected = canComm && canComm->isConnected();
+    ui->canConnectButton->setEnabled(enabled);
+    ui->canLeftArmSingleButton->setEnabled(enabled && isConnected);
+    ui->canRightArmSingleButton->setEnabled(enabled && isConnected);
+    ui->canLeftArmContinuousButton->setEnabled(enabled && isConnected);
+    ui->canRightArmContinuousButton->setEnabled(enabled && isConnected);
+    
+    if (canBothArmsSingleButton) {
+        canBothArmsSingleButton->setEnabled(enabled && isConnected);
+        canBothArmsContinuousButton->setEnabled(enabled && isConnected);
+    }
+}
+
+void MainWindow::onCANConnectClicked()
+{
+    initCANCommunication();
+
+    if (canComm->isConnected()) {
+        canComm->disconnect();
+        ui->canConnectButton->setText("连接CAN");
+        ui->canStatusLabel->setText("CAN状态: 未连接");
+        enableCANControls(true);
+        logMessage("CAN已断开");
+    } else {
+        canComm->connect("PCAN_USBBUS1", 1000000);
+        // 连接结果在onCANStatusChanged中处理
+    }
+}
+
+void MainWindow::onCANStatusChanged(int status)
+{
+    if (status == static_cast<int>(CANCommunication::Connected)) {
+        ui->canConnectButton->setText("断开CAN");
+        ui->canStatusLabel->setText("CAN状态: 已连接");
+        ui->canConnectButton->setStyleSheet("background-color: green; color: white;");
+        enableCANControls(true);
+        setOperationButtonsEnabled(true);
+        showStatusMessage("CAN连接成功");
+        
+        // 连接成功后尝试获取版本
+        versionRequestCount = 0;
+        versionReceived = false;
+        sendVersionRequest();
+        startVersionTimeout();
+        if (versionRequestCount < 3) {
+            versionRetryTimer->start(1000);
+        }
+    } else {
+        ui->canConnectButton->setText("连接CAN");
+        ui->canStatusLabel->setText("CAN状态: 未连接");
+        ui->canConnectButton->setStyleSheet("background-color: red; color: white;");
+        stopCANPolling();
+        enableCANControls(true);
+        setOperationButtonsEnabled(false);
+        clearArmDataUI(); // 断开时清空表格
+        showStatusMessage("CAN已断开");
+    }
+}
+
+void MainWindow::onCANLeftArmSingleClicked()
+{
+    if (!canComm || !canComm->isConnected()) {
+        logMessage("CAN未连接，无法获取左臂数据");
+        return;
+    }
+
+    logMessage("发送左臂单次获取请求");
+    canComm->sendRequest(CANCommunication::LeftArm);
+}
+
+void MainWindow::onCANLeftArmContinuousClicked()
+{
+    if (!canComm || !canComm->isConnected()) {
+        logMessage("CAN未连接，无法启动左臂持续获取");
+        return;
+    }
+
+    if (leftArmContinuousEnabled) {
+        // 停止
+        leftArmPollTimer->stop();
+        leftArmContinuousEnabled = false;
+        ui->canLeftArmContinuousButton->setText("持续获取");
+        ui->canLeftArmContinuousButton->setStyleSheet("QPushButton { background-color: #2196F3; color: white; border-radius: 4px; padding: 6px; font-weight: bold; } QPushButton:pressed { background-color: #1976D2; } QPushButton:disabled { background-color: #E0E0E0; color: #A0A0A0; }");
+        ui->canLeftArmSingleButton->setEnabled(true);
+        
+        // 计算并显示频率
+        qint64 duration = QDateTime::currentMSecsSinceEpoch() - leftArmStartTime;
+        double freq = 0;
+        if (duration > 0) {
+            freq = (double)leftArmFrameCount * 1000.0 / duration;
+        }
+        logMessage(QString("左臂持续获取已停止, 平均频率: %1 Hz").arg(freq, 0, 'f', 2));
+    } else {
+        // 启动
+        stopCANPolling();
+        int interval = ui->pollIntervalSpinBox->value();
+        leftArmPollTimer->start(interval);
+        leftArmContinuousEnabled = true;
+        ui->canLeftArmContinuousButton->setText("停止持续");
+        ui->canLeftArmContinuousButton->setStyleSheet("QPushButton { background-color: #F44336; color: white; border-radius: 4px; padding: 6px; font-weight: bold; } QPushButton:pressed { background-color: #D32F2F; } QPushButton:disabled { background-color: #E0E0E0; color: #A0A0A0; }");
+        ui->canLeftArmSingleButton->setEnabled(false);
+        
+        // 重置统计
+        leftArmStartTime = QDateTime::currentMSecsSinceEpoch();
+        leftArmFrameCount = 0;
+        leftSendStartTime = leftArmStartTime;
+        leftSendCount = 0;
+        
+        logMessage(QString("左臂持续获取已启动 (间隔: %1ms)").arg(interval));
+    }
+}
+
+void MainWindow::onCANLeftArmPollTimeout()
+{
+    if (canComm && canComm->isConnected()) {
+        canComm->sendRequest(CANCommunication::LeftArm);
+        leftSendCount++;
+    }
+}
+
+void MainWindow::onCANRightArmSingleClicked()
+{
+    if (!canComm || !canComm->isConnected()) {
+        logMessage("CAN未连接，无法获取右臂数据");
+        return;
+    }
+
+    logMessage("发送右臂单次获取请求");
+    canComm->sendRequest(CANCommunication::RightArm);
+}
+
+void MainWindow::onCANRightArmContinuousClicked()
+{
+    if (!canComm || !canComm->isConnected()) {
+        logMessage("CAN未连接，无法启动右臂持续获取");
+        return;
+    }
+
+    if (rightArmContinuousEnabled) {
+        // 停止
+        rightArmPollTimer->stop();
+        rightArmContinuousEnabled = false;
+        ui->canRightArmContinuousButton->setText("持续获取");
+        ui->canRightArmContinuousButton->setStyleSheet("QPushButton { background-color: #2196F3; color: white; border-radius: 4px; padding: 6px; font-weight: bold; } QPushButton:pressed { background-color: #1976D2; } QPushButton:disabled { background-color: #E0E0E0; color: #A0A0A0; }");
+        ui->canRightArmSingleButton->setEnabled(true);
+        
+        // 计算并显示频率
+        qint64 duration = QDateTime::currentMSecsSinceEpoch() - rightArmStartTime;
+        double freq = 0;
+        if (duration > 0) {
+            freq = (double)rightArmFrameCount * 1000.0 / duration;
+        }
+        logMessage(QString("右臂持续获取已停止, 平均频率: %1 Hz").arg(freq, 0, 'f', 2));
+    } else {
+        // 启动
+        stopCANPolling();
+        int interval = ui->pollIntervalSpinBox->value();
+        rightArmPollTimer->start(interval);
+        rightArmContinuousEnabled = true;
+        ui->canRightArmContinuousButton->setText("停止持续");
+        ui->canRightArmContinuousButton->setStyleSheet("QPushButton { background-color: #F44336; color: white; border-radius: 4px; padding: 6px; font-weight: bold; } QPushButton:pressed { background-color: #D32F2F; } QPushButton:disabled { background-color: #E0E0E0; color: #A0A0A0; }");
+        ui->canRightArmSingleButton->setEnabled(false);
+        
+        // 重置统计
+        rightArmStartTime = QDateTime::currentMSecsSinceEpoch();
+        rightArmFrameCount = 0;
+        rightSendStartTime = rightArmStartTime;
+        rightSendCount = 0;
+        
+        logMessage(QString("右臂持续获取已启动 (间隔: %1ms)").arg(interval));
+    }
+}
+
+void MainWindow::onCANRightArmPollTimeout()
+{
+    if (canComm && canComm->isConnected()) {
+        canComm->sendRequest(CANCommunication::RightArm);
+        rightSendCount++;
+    }
+}
+
+void MainWindow::onCANBothArmsSingleClicked()
+{
+    if (!canComm || !canComm->isConnected()) {
+        logMessage("CAN未连接，无法获取双臂数据");
+        return;
+    }
+
+    logMessage("发送双臂单次获取请求");
+    canComm->sendRequest(CANCommunication::BothArms);
+}
+
+void MainWindow::onCANBothArmsContinuousClicked()
+{
+    if (!canComm || !canComm->isConnected()) {
+        logMessage("CAN未连接，无法启动双臂持续获取");
+        return;
+    }
+
+    if (bothArmsContinuousEnabled) {
+        // 停止
+        bothArmsPollTimer->stop();
+        bothArmsContinuousEnabled = false;
+        if (canBothArmsContinuousButton) {
+            canBothArmsContinuousButton->setText("持续获取");
+            canBothArmsContinuousButton->setStyleSheet("QPushButton { background-color: #2196F3; color: white; border-radius: 4px; padding: 6px; font-weight: bold; } QPushButton:pressed { background-color: #1976D2; } QPushButton:disabled { background-color: #E0E0E0; color: #A0A0A0; }");
+            canBothArmsSingleButton->setEnabled(true);
+        }
+        
+        // 计算并显示频率
+        qint64 duration = QDateTime::currentMSecsSinceEpoch() - bothArmsStartTime;
+        double freq = 0;
+        if (duration > 0) {
+            freq = (double)bothArmsFrameCount * 1000.0 / duration;
+        }
+        logMessage(QString("双臂持续获取已停止, 平均频率: %1 Hz").arg(freq, 0, 'f', 2));
+    } else {
+        // 启动
+        stopCANPolling();
+        int interval = ui->pollIntervalSpinBox->value();
+        bothArmsPollTimer->start(interval);
+        bothArmsContinuousEnabled = true;
+        if (canBothArmsContinuousButton) {
+            canBothArmsContinuousButton->setText("停止持续");
+            canBothArmsContinuousButton->setStyleSheet("QPushButton { background-color: #F44336; color: white; border-radius: 4px; padding: 6px; font-weight: bold; } QPushButton:pressed { background-color: #D32F2F; } QPushButton:disabled { background-color: #E0E0E0; color: #A0A0A0; }");
+            canBothArmsSingleButton->setEnabled(false);
+        }
+        
+        // 重置统计
+        bothArmsStartTime = QDateTime::currentMSecsSinceEpoch();
+        bothArmsFrameCount = 0;
+        bothSendStartTime = bothArmsStartTime;
+        bothSendCount = 0;
+        
+        logMessage(QString("双臂持续获取已启动 (间隔: %1ms)").arg(interval));
+    }
+}
+
+void MainWindow::onCANBothArmsPollTimeout()
+{
+    if (canComm && canComm->isConnected()) {
+        canComm->sendRequest(CANCommunication::BothArms);
+        bothSendCount++;
+    }
+}
+
+void MainWindow::clearArmDataUI()
+{
+    // 清空表格内容
+    ui->leftArmTable->clearContents();
+    ui->rightArmTable->clearContents();
+    
+    // 清空数据缓存
+    leftArmData.clear();
+    rightArmData.clear();
+    
+    // 清空图表
+    for (auto series : leftSeries) {
+        series->clear();
+    }
+    for (auto series : rightSeries) {
+        series->clear();
+    }
+}
+void MainWindow::stopCANPolling()
+{
+    leftArmPollTimer->stop();
+    rightArmPollTimer->stop();
+    bothArmsPollTimer->stop();
+    leftArmContinuousEnabled = false;
+    rightArmContinuousEnabled = false;
+    bothArmsContinuousEnabled = false;
+
+    // Reset buttons states
+    QString styleBlue = "QPushButton { background-color: #2196F3; color: white; border-radius: 4px; padding: 6px; font-weight: bold; } QPushButton:pressed { background-color: #1976D2; } QPushButton:disabled { background-color: #E0E0E0; color: #A0A0A0; }";
+
+    ui->canLeftArmContinuousButton->setText("持续获取");
+    ui->canLeftArmContinuousButton->setStyleSheet(styleBlue);
+    ui->canLeftArmSingleButton->setEnabled(true);
+    
+    ui->canRightArmContinuousButton->setText("持续获取");
+    ui->canRightArmContinuousButton->setStyleSheet(styleBlue);
+    ui->canRightArmSingleButton->setEnabled(true);
+
+    if (canBothArmsContinuousButton) {
+        canBothArmsContinuousButton->setText("持续获取");
+        canBothArmsContinuousButton->setStyleSheet(styleBlue);
+        canBothArmsSingleButton->setEnabled(true);
+    }
+}
+
+void MainWindow::onCANLeftArmDataReceived(const QVector<float> &data)
+{
+    if (data.size() != 7) {
+        logMessage(QString("左臽数据格式错误: 期望7个关节, 收到%1个").arg(data.size()));
+        return;
+    }
+
+    // 更新左臂数据
+    leftArmData.clear();
+    for (int i = 0; i < 7; ++i) {
+        leftArmData.append(data[i]);
+    }
+
+    // 记录历史数据
+    qint64 currentTime = QDateTime::currentDateTime().toMSecsSinceEpoch();
+    static const int MAX_HISTORY = 100;
+    if (leftArmHistory.size() >= MAX_HISTORY) {
+        leftArmHistory.removeFirst();
+    }
+    leftArmHistory.append(leftArmData);
+
+    // 更新UI
+    // updateUIWithArmData(); // Removed: now handled by armUpdateTimer
+    
+    // 持续模式时立即更新图表
+    if (leftArmContinuousEnabled || rightArmContinuousEnabled) {
+        updateCharts();
+    }
+
+    if (leftArmContinuousEnabled) {
+        leftArmFrameCount++;
+    } else if (bothArmsContinuousEnabled) {
+        bothArmsFrameCount++;
+    }
+
+    // 格式化完整日志
+    QString logStr = "收到左臂数据: ";
+    for (int i = 0; i < data.size(); ++i) {
+        logStr += QString::number(data[i], 'f', 2);
+        if (i < data.size() - 1) logStr += ", ";
+    }
+    logMessage(logStr);
+}
+
+void MainWindow::onCANRightArmDataReceived(const QVector<float> &data)
+{
+    if (data.size() != 7) {
+        logMessage(QString("右臂数据格式错误: 期望7个关节, 收到%1个").arg(data.size()));
+        return;
+    }
+
+    // 更新右臂数据
+    rightArmData.clear();
+    for (int i = 0; i < 7; ++i) {
+        rightArmData.append(data[i]);
+    }
+
+    // 记录历史数据
+    qint64 currentTime = QDateTime::currentDateTime().toMSecsSinceEpoch();
+    static const int MAX_HISTORY = 100;
+    if (rightArmHistory.size() >= MAX_HISTORY) {
+        rightArmHistory.removeFirst();
+    }
+    rightArmHistory.append(rightArmData);
+
+    // 更新UI
+    // updateUIWithArmData(); // Removed: now handled by armUpdateTimer
+
+    // 持续模式时立即更新图表
+    if (leftArmContinuousEnabled || rightArmContinuousEnabled) {
+        updateCharts();
+    }
+
+    if (rightArmContinuousEnabled) {
+        rightArmFrameCount++;
+    } else if (rightArmContinuousEnabled) {
+        rightArmFrameCount++;
+    } else if (bothArmsContinuousEnabled) {
+        // 双臂模式下也要统计右臂接收（通常左右臂一起回，这里做个冗余或者按需统计，
+        // 前面 updateUIWithArmData 是统一计算频率，这里可以不加，
+        // 但为了日志或者其他逻辑一致性，保持现状或仅在独立模式统计）
+        // 注意：bothArmsFrameCount 在左臂回调里加了，这里不需要再加，否则频率会翻倍
+    }
+
+    // 格式化完整日志
+    QString logStr = "收到右臂数据: ";
+    for (int i = 0; i < data.size(); ++i) {
+        logStr += QString::number(data[i], 'f', 2);
+        if (i < data.size() - 1) logStr += ", ";
+    }
+    logMessage(logStr);
+}
+
+void MainWindow::onCANLogMessage(const QString &message, const QString &type)
+{
+    // 根据类型添加颜色标识
+    QString color;
+    if (type == "error") {
+        color = "red";
+    } else if (type == "success") {
+        color = "green";
+    } else if (type == "warning") {
+        color = "orange";
+    } else if (type == "response") {
+        color = "blue";
+    } else {
+        logMessage(message);
+        return;
+    }
+
+    QString timestamp = getCurrentTimeString();
+    ui->logTextEdit->append(QString("<span style='color:%1'>%2 %3</span>").arg(color).arg(timestamp).arg(message));
+
+    QTextCursor cursor = ui->logTextEdit->textCursor();
+    cursor.movePosition(QTextCursor::End);
+    ui->logTextEdit->setTextCursor(cursor);
+}
+
+void MainWindow::onCANErrorOccurred(const QString &error)
+{
+    logMessage("CAN错误: " + error);
+    showStatusMessage("CAN错误: " + error);
 }

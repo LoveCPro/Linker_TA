@@ -12,7 +12,12 @@
 
 #include "serialprotocol.h"
 
+#define APP_VERSION "1.0.0"
+
 // 前向声明
+class CANCommunication;
+class QPushButton;
+
 namespace Ui {
 class MainWindow;
 }
@@ -24,6 +29,12 @@ class MainWindow : public QMainWindow
     Q_OBJECT
 
 public:
+    // 通信模式枚举
+    enum class CommunicationMode {
+        Serial,  // 无线摇操臂（串口）
+        CAN      // 有线摇操臂（CAN总线）
+    };
+
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
 
@@ -49,6 +60,30 @@ private slots:
     void onContinuousTimer();
     void updateCharts();
 
+    // 通信模式相关
+    void onCommunicationModeChanged(int index);
+
+    // CAN相关
+    void onCANConnectClicked();
+    void onCANLeftArmSingleClicked();
+    void onCANLeftArmContinuousClicked();
+    void onCANRightArmSingleClicked();
+    void onCANRightArmContinuousClicked();
+    void onCANLeftArmPollTimeout();
+    void onCANRightArmPollTimeout();
+    
+    // 双臂操作槽函数
+    void onCANBothArmsSingleClicked();
+    void onCANBothArmsContinuousClicked();
+    void onCANBothArmsPollTimeout();
+
+    // CAN相关事件
+    void onCANStatusChanged(int status);
+    void onCANLeftArmDataReceived(const QVector<float> &data);
+    void onCANRightArmDataReceived(const QVector<float> &data);
+    void onCANLogMessage(const QString &message, const QString &type);
+    void onCANErrorOccurred(const QString &error);
+
 private:
     Ui::MainWindow *ui;
     QSerialPort *serialPort;
@@ -58,6 +93,38 @@ private:
     QTimer *versionTimeoutTimer;
     QTimer *versionRetryTimer;
     QTimer *calibrateTimeoutTimer;
+
+    // CAN通信
+    CANCommunication *canComm;
+    CommunicationMode currentMode;
+    QTimer *leftArmPollTimer;
+    QTimer *rightArmPollTimer;
+    QTimer *bothArmsPollTimer;
+    bool leftArmContinuousEnabled;
+    bool rightArmContinuousEnabled;
+    bool bothArmsContinuousEnabled;
+
+    // 频率统计
+    qint64 leftArmStartTime = 0;
+    int leftArmFrameCount = 0;
+    qint64 rightArmStartTime = 0;
+    int rightArmFrameCount = 0;
+    qint64 bothArmsStartTime = 0;
+    int bothArmsFrameCount = 0;
+    qint64 leftSendStartTime = 0;
+    int leftSendCount = 0;
+    qint64 rightSendStartTime = 0;
+    int rightSendCount = 0;
+    qint64 bothSendStartTime = 0;
+    int bothSendCount = 0;
+    
+    // 无线模式频率统计
+    qint64 serialStartTime = 0;
+    int serialRxCount = 0;
+    
+    // 动态添加的按钮
+    QPushButton *canBothArmsSingleButton = nullptr;
+    QPushButton *canBothArmsContinuousButton = nullptr;
 
     QByteArray rxBuffer;
     bool streamEnabled = false;
@@ -111,6 +178,15 @@ private:
     void stopVersionTimeout();
     void startCalibrateTimeout();
     void stopCalibrateTimeout();
+
+    // CAN相关辅助函数
+    void initCANCommunication();
+    void cleanupCANCommunication();
+    void updateUIForCommunicationMode(CommunicationMode mode);
+    void enableSerialControls(bool enabled);
+    void enableCANControls(bool enabled);
+    void stopCANPolling();
+    void clearArmDataUI();
 };
 
 #endif // MAINWINDOW_H
