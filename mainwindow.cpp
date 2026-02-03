@@ -74,7 +74,7 @@ void MainWindow::initUI()
     // 初始化波特率
     ui->baudRateComboBox->setEditable(true); // 允许手动输入
     ui->baudRateComboBox->addItems({"115200", "256000", "921600", "1000000", "2000000", "3000000"});
-    ui->baudRateComboBox->setCurrentText("921600");
+    ui->baudRateComboBox->setCurrentText("2000000");
     // 设置验证器，只允许输入数字
     ui->baudRateComboBox->setValidator(new QIntValidator(1200, 4000000, this));
 
@@ -380,6 +380,8 @@ void MainWindow::initConnections()
 
     calibrateTimeoutTimer->setSingleShot(true);
     connect(calibrateTimeoutTimer, &QTimer::timeout, [this]() {
+        calibrating = false;
+        updateCalibrateButtonState();
         logMessage("零点标定失败：超时，未收到标定响应");
         showStatusMessage("零点标定失败：标定响应超时");
     });
@@ -531,12 +533,16 @@ void MainWindow::closeSerialPort()
         }
         versionRequestCount = 0;
         versionReceived = false;
+        calibrating = false;
         acceptingStream = false;
         streamEnabled = false;
         ui->armGetButton->setText("获取");
         ui->armGetButton->setStyleSheet("background-color: red; color: white;");
         setOperationButtonsEnabled(false);
-        
+
+        // 清空关节数据表格
+        clearArmDataUI();
+
         // 重置版本显示
         ui->versionLabel->setText("版本: 未知");
 
@@ -617,6 +623,8 @@ void MainWindow::handleProtocolFrame(const SerialProtocol::Frame &frame)
     switch (static_cast<SerialProtocol::CommandType>(frame.cmdType)) {
     case SerialProtocol::CMD_CALIBRATE:
         stopCalibrateTimeout();
+        calibrating = false;
+        updateCalibrateButtonState();
         okFailText("零点标定成功", "零点标定失败");
         break;
     case SerialProtocol::CMD_TORQUE_CONTROL:
@@ -641,9 +649,8 @@ void MainWindow::handleProtocolFrame(const SerialProtocol::Frame &frame)
                 versionRetryTimer->stop();
             }
             versionReceived = true;
-            QByteArray versionBytes = payload.left(4);
-            QString versionHex = versionBytes.toHex().toUpper();
-            QString versionStr = QString("版本: V%1").arg(versionHex);
+            QByteArray versionBytes = payload.left(qMin(4, payload.size()));
+            QString versionStr = parseVersionNumber(versionBytes);
             ui->versionLabel->setText(versionStr);
             logMessage("获取版本成功: " + versionStr);
             showStatusMessage("获取版本成功: " + versionStr);
@@ -728,11 +735,12 @@ void MainWindow::onArmGetClicked()
     if (!streamEnabled) {
         ensureStreamEnabled();
         acceptingStream = true;
-        
+        updateCalibrateButtonState(); // 数据推送开启时更新校准按钮状态
+
         // 重置统计
         serialStartTime = QDateTime::currentMSecsSinceEpoch();
         serialRxCount = 0;
-        
+
         armUpdateTimer->start(500);
         ui->armGetButton->setText("停止");
         ui->armGetButton->setStyleSheet("background-color: green; color: white;");
@@ -743,6 +751,7 @@ void MainWindow::onArmGetClicked()
         writeData(cmd);
         armUpdateTimer->stop();
         acceptingStream = false;
+        updateCalibrateButtonState(); // 数据推送关闭时更新校准按钮状态
         
         // 计算并显示最终频率
         qint64 duration = QDateTime::currentMSecsSinceEpoch() - serialStartTime;
@@ -776,8 +785,11 @@ void MainWindow::onCalibrateClicked()
             logMessage("已发送校准命令 (CAN)");
         } else {
             logMessage("CAN未连接，无法发送校准命令");
+            return;
         }
     }
+    calibrating = true;
+    updateCalibrateButtonState();
     startCalibrateTimeout();
 }
 
@@ -947,28 +959,42 @@ void MainWindow::updateUIWithArmData()
     qint64 now = QDateTime::currentMSecsSinceEpoch();
     double sendFreq = 0.0;
     double recvFreq = 0.0;
+    bool hasDataTransfer = false; // 是否有数据传输
+
     if (leftArmContinuousEnabled && leftSendStartTime > 0 && leftArmStartTime > 0) {
         qint64 sd = now - leftSendStartTime;
         qint64 rd = now - leftArmStartTime;
         if (sd > 0) sendFreq = (double)leftSendCount * 1000.0 / sd;
         if (rd > 0) recvFreq = (double)leftArmFrameCount * 1000.0 / rd;
+        hasDataTransfer = true;
     } else if (rightArmContinuousEnabled && rightSendStartTime > 0 && rightArmStartTime > 0) {
         qint64 sd = now - rightSendStartTime;
         qint64 rd = now - rightArmStartTime;
         if (sd > 0) sendFreq = (double)rightSendCount * 1000.0 / sd;
         if (rd > 0) recvFreq = (double)rightArmFrameCount * 1000.0 / rd;
+        hasDataTransfer = true;
     } else if (bothArmsContinuousEnabled && bothSendStartTime > 0 && bothArmsStartTime > 0) {
         qint64 sd = now - bothSendStartTime;
         qint64 rd = now - bothArmsStartTime;
         if (sd > 0) sendFreq = (double)bothSendCount * 1000.0 / sd;
         if (rd > 0) recvFreq = (double)bothArmsFrameCount * 1000.0 / rd;
+        hasDataTransfer = true;
     } else if (currentMode == CommunicationMode::Serial && acceptingStream && serialStartTime > 0) {
         qint64 rd = now - serialStartTime;
         // 串口模式下如果是数据流推送，发送频率视为0（或者统计心跳包，这里暂定为0）
-        sendFreq = 0.0; 
+        sendFreq = 0.0;
         if (rd > 0) recvFreq = (double)serialRxCount * 1000.0 / rd;
+        hasDataTransfer = true;
     }
-    showStatusMessage(QString("发送频率: %1 Hz, 接收频率: %2 Hz").arg(sendFreq, 0, 'f', 2).arg(recvFreq, 0, 'f', 2));
+
+    // 在状态栏显示频率信息
+    if (currentMode == CommunicationMode::Serial) {
+        // 无线模式只显示接收频率
+        showStatusMessage(QString("接收频率: %1 Hz").arg(recvFreq, 0, 'f', 2));
+    } else {
+        // CAN模式显示发送和接收频率
+        showStatusMessage(QString("发送频率: %1 Hz, 接收频率: %2 Hz").arg(sendFreq, 0, 'f', 2).arg(recvFreq, 0, 'f', 2));
+    }
 }
 
 void MainWindow::updateCharts()
@@ -1061,6 +1087,42 @@ QString MainWindow::getCurrentTimeString()
     return QDateTime::currentDateTime().toString("[hh:mm:ss.zzz]");
 }
 
+QString MainWindow::parseVersionNumber(const QByteArray &versionBytes)
+{
+    if (versionBytes.isEmpty()) {
+        return "版本: 未知";
+    }
+
+    // 解析版本号字节（固定4字节格式）
+    // 格式: [硬件版本] [软件版本] [保留1] [保留2]
+    // 示例: 72 64 01 00 -> 硬件版本: V1.1.4, 软件版本: V1.0.0
+    QString hwVersion = "未知";
+    QString swVersion = "未知";
+
+    // 辅助函数：将数字转换为X.Y.Z格式
+    auto formatVersion = [](quint8 v) -> QString {
+        int major = v / 100;
+        int minor = (v % 100) / 10;
+        int patch = v % 10;
+        return QString("V%1.%2.%3").arg(major).arg(minor).arg(patch);
+    };
+
+    // 硬件版本号 (Byte 0)
+    if (versionBytes.size() >= 1) {
+        quint8 hw = static_cast<quint8>(versionBytes[0]);
+        hwVersion = formatVersion(hw);
+    }
+
+    // 软件版本号 (Byte 1)
+    if (versionBytes.size() >= 2) {
+        quint8 sw = static_cast<quint8>(versionBytes[1]);
+        swVersion = formatVersion(sw);
+    }
+
+    QString versionStr = QString("硬件版本: %1, 软件版本: %2").arg(hwVersion).arg(swVersion);
+    return versionStr;
+}
+
 void MainWindow::showStatusMessage(const QString &message, int timeout)
 {
     statusBar()->showMessage(message, timeout);
@@ -1105,7 +1167,9 @@ void MainWindow::stopVersionTimeout()
 
 void MainWindow::startCalibrateTimeout()
 {
-    calibrateTimeoutTimer->start(3000);
+    // 无线模式响应较慢，使用更长的超时时间
+    int timeout = (currentMode == CommunicationMode::Serial) ? 10000 : 3000;
+    calibrateTimeoutTimer->start(timeout);
 }
 
 void MainWindow::stopCalibrateTimeout()
@@ -1113,6 +1177,23 @@ void MainWindow::stopCalibrateTimeout()
     if (calibrateTimeoutTimer->isActive()) {
         calibrateTimeoutTimer->stop();
     }
+}
+
+void MainWindow::updateCalibrateButtonState()
+{
+    // 校准中或数据获取中时禁用校准按钮
+    bool enabled = !calibrating;
+    // 无线模式：数据推送开启时禁用
+    if (currentMode == CommunicationMode::Serial && acceptingStream) {
+        enabled = false;
+    }
+    // CAN模式：持续获取开启时禁用
+    else if (currentMode == CommunicationMode::CAN) {
+        if (leftArmContinuousEnabled || rightArmContinuousEnabled || bothArmsContinuousEnabled) {
+            enabled = false;
+        }
+    }
+    ui->calibrateButton->setEnabled(enabled);
 }
 
 // ==================== CAN通信相关实现 ====================
@@ -1130,6 +1211,8 @@ void MainWindow::initCANCommunication()
         connect(canComm, &CANCommunication::errorOccurred, this, &MainWindow::onCANErrorOccurred);
         connect(canComm, &CANCommunication::calibrationResultReceived, [this](bool success) {
             stopCalibrateTimeout();
+            calibrating = false;
+            updateCalibrateButtonState();
             if (success) {
                 logMessage("零点标定成功 (CAN)");
                 showStatusMessage("零点标定成功 (CAN)");
@@ -1291,6 +1374,8 @@ void MainWindow::onCANStatusChanged(int status)
         enableCANControls(true);
         setOperationButtonsEnabled(false);
         clearArmDataUI(); // 断开时清空表格
+        // 重置版本显示
+        ui->versionLabel->setText("版本: 未知");
         showStatusMessage("CAN已断开");
     }
 }
@@ -1328,6 +1413,7 @@ void MainWindow::onCANLeftArmContinuousClicked()
             freq = (double)leftArmFrameCount * 1000.0 / duration;
         }
         logMessage(QString("左臂持续获取已停止, 平均频率: %1 Hz").arg(freq, 0, 'f', 2));
+        updateCalibrateButtonState();
     } else {
         // 启动
         stopCANPolling();
@@ -1343,8 +1429,9 @@ void MainWindow::onCANLeftArmContinuousClicked()
         leftArmFrameCount = 0;
         leftSendStartTime = leftArmStartTime;
         leftSendCount = 0;
-        
+
         logMessage(QString("左臂持续获取已启动 (间隔: %1ms)").arg(interval));
+        updateCalibrateButtonState();
     }
 }
 
@@ -1389,6 +1476,7 @@ void MainWindow::onCANRightArmContinuousClicked()
             freq = (double)rightArmFrameCount * 1000.0 / duration;
         }
         logMessage(QString("右臂持续获取已停止, 平均频率: %1 Hz").arg(freq, 0, 'f', 2));
+        updateCalibrateButtonState();
     } else {
         // 启动
         stopCANPolling();
@@ -1404,8 +1492,9 @@ void MainWindow::onCANRightArmContinuousClicked()
         rightArmFrameCount = 0;
         rightSendStartTime = rightArmStartTime;
         rightSendCount = 0;
-        
+
         logMessage(QString("右臂持续获取已启动 (间隔: %1ms)").arg(interval));
+        updateCalibrateButtonState();
     }
 }
 
@@ -1452,6 +1541,7 @@ void MainWindow::onCANBothArmsContinuousClicked()
             freq = (double)bothArmsFrameCount * 1000.0 / duration;
         }
         logMessage(QString("双臂持续获取已停止, 平均频率: %1 Hz").arg(freq, 0, 'f', 2));
+        updateCalibrateButtonState();
     } else {
         // 启动
         stopCANPolling();
@@ -1469,8 +1559,9 @@ void MainWindow::onCANBothArmsContinuousClicked()
         bothArmsFrameCount = 0;
         bothSendStartTime = bothArmsStartTime;
         bothSendCount = 0;
-        
+
         logMessage(QString("双臂持续获取已启动 (间隔: %1ms)").arg(interval));
+        updateCalibrateButtonState();
     }
 }
 
@@ -1549,8 +1640,11 @@ void MainWindow::onCANLeftArmDataReceived(const QVector<float> &data)
     leftArmHistory.append(leftArmData);
 
     // 更新UI
-    // updateUIWithArmData(); // Removed: now handled by armUpdateTimer
-    
+    // 单次获取时立即更新表格，持续获取时由定时器更新避免频闪
+    if (!leftArmContinuousEnabled && !rightArmContinuousEnabled && !bothArmsContinuousEnabled) {
+        updateUIWithArmData();
+    }
+
     // 持续模式时立即更新图表
     if (leftArmContinuousEnabled || rightArmContinuousEnabled) {
         updateCharts();
@@ -1593,7 +1687,10 @@ void MainWindow::onCANRightArmDataReceived(const QVector<float> &data)
     rightArmHistory.append(rightArmData);
 
     // 更新UI
-    // updateUIWithArmData(); // Removed: now handled by armUpdateTimer
+    // 单次获取时立即更新表格，持续获取时由定时器更新避免频闪
+    if (!leftArmContinuousEnabled && !rightArmContinuousEnabled && !bothArmsContinuousEnabled) {
+        updateUIWithArmData();
+    }
 
     // 持续模式时立即更新图表
     if (leftArmContinuousEnabled || rightArmContinuousEnabled) {

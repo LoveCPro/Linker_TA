@@ -363,13 +363,24 @@ void CANCommunication::onFrameReceived(const CANDataFrame &frame) {
         emit logMessage(QString("接收到版本信息 (ID=0x%1) Data=%2")
                        .arg(frame.id, 2, 16, QChar('0'))
                        .arg(QString(frame.data.toHex())), "response");
-        
-        if (frame.data.size() > 0) {
-            quint8 v = static_cast<quint8>(frame.data.at(0));
-            int major = v / 100;
-            int minor = (v % 100) / 10;
-            int patch = v % 10;
-            QString versionStr = QString("V%1.%2.%3").arg(major).arg(minor).arg(patch);
+
+        // 版本号格式: [硬件版本] [软件版本] [保留1] [保留2]
+        // 示例: 72 64 01 00 -> 硬件版本: V1.1.4, 软件版本: V1.0.0
+        if (frame.data.size() >= 2) {
+            quint8 hwVersion = static_cast<quint8>(frame.data.at(0));
+            quint8 swVersion = static_cast<quint8>(frame.data.at(1));
+
+            // 将数字转换为X.Y.Z格式
+            auto formatVersion = [](quint8 v) -> QString {
+                int major = v / 100;
+                int minor = (v % 100) / 10;
+                int patch = v % 10;
+                return QString("V%1.%2.%3").arg(major).arg(minor).arg(patch);
+            };
+
+            QString versionStr = QString("硬件版本: %1, 软件版本: %2")
+                                    .arg(formatVersion(hwVersion))
+                                    .arg(formatVersion(swVersion));
             emit versionReceived(versionStr);
         }
         break;

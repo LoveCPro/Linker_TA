@@ -17,6 +17,8 @@
 // 前向声明
 class CANCommunication;
 class QPushButton;
+class QLabel;
+class QSpinBox;
 
 namespace Ui {
 class MainWindow;
@@ -131,6 +133,7 @@ private:
     bool acceptingStream = false; // 臂数据获取开关（停止后不再更新UI，但仍可继续读串口）
     int versionRequestCount = 0;
     bool versionReceived = false;
+    bool calibrating = false; // 校准状态标志，true表示正在等待校准响应
 
     // 数据存储
     QVector<float> leftArmData;
@@ -178,6 +181,8 @@ private:
     void stopVersionTimeout();
     void startCalibrateTimeout();
     void stopCalibrateTimeout();
+    void updateCalibrateButtonState(); // 更新校准按钮状态
+    QString parseVersionNumber(const QByteArray &versionBytes); // 解析版本号
 
     // CAN相关辅助函数
     void initCANCommunication();

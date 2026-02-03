@@ -27,6 +27,7 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
         serialprotocol.h serialprotocol.cpp
         mainwindow.ui
         cancommunication.cpp cancommunication.h canprotocol.cpp canprotocol.h
+        log.h
 
     )
 # Define target properties for Android with Qt 6 as:

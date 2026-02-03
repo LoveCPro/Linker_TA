@@ -2,8 +2,8 @@
 #include <QDebug>
 
 // ===== 日志开关 =====
-#define LOG_SERIAL   1
-#define LOG_FRAME    1
+#define LOG_SERIAL   0
+#define LOG_FRAME    0
 #define LOG_ERROR    1
 
 // ===== 日志宏 =====
